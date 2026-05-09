@@ -909,8 +909,8 @@ If you are not familiar with Star Citizen and want to try it, I maintain a begin
 
 [EnlistCitizen.com](https://enlistcitizen.com/)
 
-You can also use my referral link when creating a new RSI account:
+You can also use my Star Citizen referral code link when creating a new RSI account:
 
 [Enlist with referral code STAR-GN2F-6JLW](https://robertsspaceindustries.com/enlist?referral=STAR-GN2F-6JLW)
 
-Using a referral code is optional, but new accounts currently receive a referral UEC bonus when signing up with one. As of the latest community referral program information, that bonus is **50,000 UEC**.
+Using a Star Citizen referral code is optional, but new accounts currently receive a referral UEC bonus when signing up with one. As of the latest community referral program information, that bonus is **50,000 UEC**.
