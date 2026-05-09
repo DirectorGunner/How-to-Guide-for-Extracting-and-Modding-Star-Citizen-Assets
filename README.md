@@ -1,14 +1,70 @@
----
+# Zero to Hero: Star Citizen Asset Extraction and Modding Workflow
 
-title: Zero to Hero tutorial
-description: Windows power-user setup for StarBreaker, Blender, and Star Citizen asset exploration.
--------------------------------------------------------------------------------------------------------------------
-
-# Zero to Hero tutorial
+A modern Windows power-user workflow for StarBreaker, Blender, `Data.p4k` exploration, and AI-assisted community tool development.
 
 > Community tutorial by [DirectorGunner](https://github.com/DirectorGunner).
 
-This guide walks through a Windows 11 setup for working with the current community tool repo StarBreaker, Blender, and supporting Star Citizen asset tools. It favors a power-user workflow where tools, caches, exports, and work files live under `D:\dev` instead of being scattered across the system drive.
+## Overview
+
+Times have changed. Welcome to a new era of Star Citizen asset exploration, where modern community tools and AI-assisted workflows can massively reduce the barrier to entry.
+
+This guide is aimed at power users, modders, artists, and technically curious backers who are comfortable following command-line instructions. That said, if you use an AI assistant carefully and ask it to explain each step, you can work through this setup even with little to no prior command-line experience.
+
+The goal of this repo is to maintain an all-in-one workflow that brings together community projects like StarBreaker, Blender, CryEngine conversion tools, texture tools, `Data.p4k` organization, VS Code, and AI-assisted development into one practical pipeline that anyone with patience can use.
+
+> [!NOTE]
+> This guide was refreshed on 05/09/2026. Star Citizen is an active alpha, and community tools may break or change as CIG updates the game data format. Treat this guide as a living document.
+
+> [!IMPORTANT]
+> This guide is intended for personal learning, fan art, research, and community tooling. Treat your local `Data.p4k` files as read-only, do not redistribute extracted game assets, and respect CIG’s terms and community rules.
+
+## What this guide covers
+
+- Setting up a clean Windows 11 power-user development environment
+- Keeping tools, caches, exports, and work files organized under `D:\dev`, or a location of your choosing
+- Installing Git, Visual Studio Build Tools, Rust, Python, .NET, CMake, Node.js, and VS Code
+- Creating an AI-assisted multi-repo VS Code workspace
+- Building StarBreaker and StarBreaker MCP locally
+- Organizing versioned `Data.p4k` builds
+- Exploring `Data.p4k` directly
+- Resolving ship entities and loadouts
+- Exporting a decomposed StarBreaker package
+- Importing that package into Blender with the StarBreaker add-on
+- Using the Aurora MR as a practical end-to-end example
+
+## Community tools used
+
+This workflow builds on work from several community projects:
+
+- [StarBreaker](https://github.com/diogotr7/StarBreaker)
+- [Blender-Tools](https://github.com/scorg-tools/Blender-Tools)
+- [unp4k](https://github.com/dolkensp/unp4k)
+- [Cryengine-Converter](https://github.com/markemp/Cryengine-Converter)
+- [SCTextureConverter](https://github.com/Madfish71/SCTextureConverter)
+
+Please support and credit the original tool authors.
+
+## Table of contents
+
+1. [Install base tools](#1-install-base-tools)
+2. [Install Rust](#2-install-rust)
+3. [Install Python](#3-install-python)
+4. [Create work folders](#4-create-work-folders)
+5. [Install .NET SDKs](#5-install-net-sdks)
+6. [Install CMake](#6-install-cmake)
+7. [Clone repositories](#7-clone-repositories)
+8. [Install VS Code and extensions](#8-install-visual-studio-code-and-extensions)
+9. [Install Node.js](#9-install-nodejs)
+10. [Install Codex CLI and VS Code AI tools](#10-install-codex-cli-and-vs-code-ai-tools)
+11. [Create the VS Code workspace](#11-create-the-vs-code-workspace)
+12. [Create safe development branches](#12-create-safe-development-branches)
+13. [Verify the workspace terminal](#13-verify-the-workspace-terminal)
+14. [Build StarBreaker and MCP](#14-build-starbreaker-and-mcp)
+15. [Select a Star Citizen build](#15-select-a-star-citizen-build)
+16. [Explore P4K paths](#16-explore-p4k-paths)
+17. [Resolve and export an Aurora MR example](#17-resolve-and-export-an-aurora-mr-example)
+18. [Install the StarBreaker Blender add-on](#18-install-the-starbreaker-blender-add-on)
+19. [Import the decomposed package into Blender](#19-import-the-decomposed-package-into-blender)
 
 ## Folder layout used in this guide
 
@@ -80,10 +136,10 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools -e --source winget --
 
 Make sure the following components are installed:
 
-* Desktop development with C++
-* MSVC v143 VS 2022 C++ x64/x86 build tools
-* Windows 11 SDK
-* C++ CMake tools for Windows
+- Desktop development with C++
+- MSVC v143 VS 2022 C++ x64/x86 build tools
+- Windows 11 SDK
+- C++ CMake tools for Windows
 
 If those were not installed, run the Visual Studio installer manually:
 
@@ -93,7 +149,7 @@ If those were not installed, run the Visual Studio installer manually:
 
 Choose **Modify** for Build Tools and add the missing components.
 
-## 2. Install Rust on `D:\dev`
+## 2. Install Rust
 
 Use **Developer PowerShell for VS 2022** for Rust verification and builds.
 
@@ -156,7 +212,7 @@ Remove-Item "$env:USERPROFILE\.rustup" -Recurse -Force -ErrorAction SilentlyCont
 
 Fix the blocker, then retry the Rust install.
 
-## 3. Install Python on `D:\dev`
+## 3. Install Python
 
 Run:
 
@@ -164,11 +220,11 @@ Run:
 winget install --id Python.Python.3.12 -e --source winget --interactive
 ```
 
-In the installer choose **Customize installation** and enable:
+In the installer, choose **Customize installation** and enable:
 
-* pip
-* py launcher
-* Add Python to environment variables
+- pip
+- py launcher
+- Add Python to environment variables
 
 Use this install path:
 
@@ -268,7 +324,7 @@ mkdir D:\dev\scdata\work -Force
 mkdir D:\dev\scdata\logs -Force
 ```
 
-## 5. Install .NET SDKs on `D:\dev`
+## 5. Install .NET SDKs
 
 Download the installer script:
 
@@ -312,7 +368,7 @@ D:\dev\dotnet\dotnet.exe --info
 
 If `C:\Program Files\dotnet\dotnet.exe` is taking priority, move `D:\dev\dotnet` above `C:\Program Files\dotnet` in the system `Path`.
 
-## 6. Install CMake on `D:\dev`
+## 6. Install CMake
 
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/Kitware/CMake/releases/download/v4.3.1/cmake-4.3.1-windows-x86_64.zip" -OutFile "D:\dev\installers\cmake-4.3.1-windows-x86_64.zip"
@@ -411,7 +467,7 @@ Verify:
 code --list-extensions
 ```
 
-## 9. Install Node.js on `D:\dev`
+## 9. Install Node.js
 
 ```powershell
 mkdir D:\dev\node -Force
@@ -483,7 +539,7 @@ where.exe codex
 codex --version
 ```
 
-Open VS Code, sign in to GitHub, then install/sign into your preferred AI tools, such as Codex or Claude Code.
+Open VS Code, sign in to GitHub, then install and sign into your preferred AI tools, such as Codex or Claude Code.
 
 ## 11. Create the VS Code workspace
 
@@ -694,7 +750,7 @@ Test MCP:
 .\target\release\starbreaker-mcp.exe --help
 ```
 
-## 15. Select a Star Citizen build for the session
+## 15. Select a Star Citizen build
 
 Copy your `Data.p4k` into a versioned folder, for example:
 
@@ -822,3 +878,11 @@ After import:
 4. Click **Last**.
 
 The landing gear should retract if the matching animation data was exported and applied successfully.
+
+## 20. More to be added at a later date
+
+## AI-assisted setup
+
+A script could eventually automate much of this setup. You can use a current LLM to help generate one from this guide, but review every command before running it. AI assistants make mistakes, and setup scripts can change your system quickly.
+
+For best results, ask your AI assistant to explain each command, check paths before running anything, and avoid destructive commands unless you fully understand what they do.
