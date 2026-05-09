@@ -130,6 +130,60 @@ C:\Program Files\Git\cmd
 
 Close and reopen PowerShell.
 
+### Install GitHub CLI to D:\dev\gh
+
+Create dev and dev\gh folders
+```powershell
+mkdir D:\dev\ -Force
+mkdir D:\dev\gh -Force
+mkdir D:\dev\installers -Force
+```
+
+Download the latest GitHub CLI Windows amd64 ZIP
+```powershell
+$ghRelease = Invoke-RestMethod "https://api.github.com/repos/cli/cli/releases/latest"
+$ghAsset = $ghRelease.assets | Where-Object { $_.name -like "gh_*_windows_amd64.zip" } | Select-Object -First 1
+Invoke-WebRequest -Uri $ghAsset.browser_download_url -OutFile "D:\dev\installers\$($ghAsset.name)"
+```
+
+Extract it
+```powershell
+Expand-Archive -Path "D:\dev\installers\$($ghAsset.name)" -DestinationPath "D:\dev\installers\gh-extract" -Force
+```
+
+Copy it
+```powershell
+$ghExe = Get-ChildItem D:\dev\installers\gh-extract -Recurse -Filter gh.exe | Select-Object -First 1
+$ghRoot = Split-Path (Split-Path $ghExe.FullName -Parent) -Parent
+Remove-Item D:\dev\gh\* -Recurse -Force -ErrorAction SilentlyContinue
+Copy-Item "$ghRoot\*" D:\dev\gh -Recurse -Force
+```
+
+Add GitHub CLI to User path by open **Edit the system environment variables** from the Start menu, then go to:
+
+```text
+Environment Variables → System variables → Path → Edit
+```
+Add this entry if missing:
+
+```text
+D:\dev\gh\bin
+```
+
+Restart PowerShell and verify
+
+```powershell
+where.exe gh
+gh --version
+```
+
+If no issues, authenticate and check
+
+```powershell
+gh auth login --hostname github.com --git-protocol https --web
+Test-NetConnection github.com -Port 443
+```
+
 ### Install Visual Studio Build Tools
 
 ```powershell
@@ -170,7 +224,7 @@ setx CARGO_HOME "D:\dev\rust\.cargo"
 setx RUSTUP_HOME "D:\dev\rust\.rustup"
 ```
 
-Add Cargo to your user or system `Path` manually using Windows Environment Variables:
+Add Cargo to your user `Path` manually using Windows Environment Variables:
 
 ```text
 D:\dev\rust\.cargo\bin
@@ -316,7 +370,6 @@ deactivate
 ## 4. Create work folders
 
 ```powershell
-mkdir D:\dev\installers -Force
 mkdir D:\dev\dotnet -Force
 mkdir D:\dev\cmake -Force
 mkdir D:\dev\scdata -Force
