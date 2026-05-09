@@ -65,6 +65,7 @@ Please support and credit the original tool authors.
 17. [Resolve and export an Aurora MR example](#17-resolve-and-export-an-aurora-mr-example)
 18. [Install the StarBreaker Blender add-on](#18-install-the-starbreaker-blender-add-on)
 19. [Import the decomposed package into Blender](#19-import-the-decomposed-package-into-blender)
+41. [A little bit of history behind this tutorial](#41-a-little-bit-of-history-behind-this-tutorial)
 42. [New to Star Citizen?](#42-new-to-star-citizen)
 
 ## Folder layout used in this guide
@@ -887,6 +888,20 @@ The landing gear should retract if the matching animation data was exported and 
 A script could eventually automate much of this setup. You can use a current LLM to help generate one from this guide, but review every command before running it. AI assistants make mistakes, and setup scripts can change your system quickly.
 
 For best results, ask your AI assistant to explain each command, check paths before running anything, and avoid destructive commands unless you fully understand what they do.
+
+## 41. A little bit of history behind this tutorial
+
+I have been helping Star Citizen backers understand asset extraction, modding workflows, cosplay references, and community tools since around 2015.
+
+This guide is an evolution of [years of trial, error, broken tools, rebuilt workflows, community discoveries, and countless questions from backers](https://robertsspaceindustries.com/spectrum/community/SC/forum/50172/thread/how-to-start-modding-existing-star-citizen-assets/28079) who wanted to do something creative with Star Citizen assets but did not know where to begin.
+
+Older workflows often required a lot of scattered knowledge: finding the right extractor, dealing with hit-or-miss CryEngine (now Star Engine) asset conversions, fixing textures, importing into Blender, understanding what broke after a patch, and figuring out which community tool still worked. For many people, that was enough friction to stop them before they ever got to the fun part.
+
+The goal of this updated guide is to lower that wall.
+
+This new workflow is built around a simple idea: put the related community repos, tools, exports, logs, and working folders into one organized Windows development environment so both humans and AI assistants can reason about the whole pipeline. Instead of treating every tool as a disconnected mystery box, the workspace becomes something you can inspect, build, troubleshoot, and improve.
+
+I am proud of the work the community has done over the years, and I hope this guide helps the next wave of creative backers not only extract and render assets, but also contribute fixes, documentation, and improvements back to the tools we all rely on.
 
 ## 42. New to Star Citizen?
 
