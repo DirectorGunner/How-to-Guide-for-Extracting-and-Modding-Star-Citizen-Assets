@@ -65,6 +65,7 @@ Please support and credit the original tool authors.
 17. [Resolve and export an Aurora MR example](#17-resolve-and-export-an-aurora-mr-example)
 18. [Install the StarBreaker Blender add-on](#18-install-the-starbreaker-blender-add-on)
 19. [Import the decomposed package into Blender](#19-import-the-decomposed-package-into-blender)
+42. [New to Star Citizen?](#42-new-to-star-citizen)
 
 ## Folder layout used in this guide
 
@@ -886,3 +887,15 @@ The landing gear should retract if the matching animation data was exported and 
 A script could eventually automate much of this setup. You can use a current LLM to help generate one from this guide, but review every command before running it. AI assistants make mistakes, and setup scripts can change your system quickly.
 
 For best results, ask your AI assistant to explain each command, check paths before running anything, and avoid destructive commands unless you fully understand what they do.
+
+## 42. New to Star Citizen?
+
+If you are not familiar with Star Citizen and want to try it, I maintain a beginner-friendly enlistment site here:
+
+[EnlistCitizen.com](https://enlistcitizen.com/)
+
+You can also use my referral link when creating a new RSI account:
+
+[Enlist with referral code STAR-GN2F-6JLW](https://robertsspaceindustries.com/enlist?referral=STAR-GN2F-6JLW)
+
+Using a referral code is optional, but new accounts currently receive a referral UEC bonus when signing up with one. As of the latest community referral program information, that bonus is **50,000 UEC**.
