@@ -2,7 +2,7 @@
 
 A modern Windows power-user workflow for StarBreaker, Blender, `Data.p4k` exploration, and AI-assisted community tool development.
 
-> Community tutorial by [DirectorGunner](https://github.com/DirectorGunner).
+> Community tutorial by [DirectorGunner](https://robertsspaceindustries.com/en/citizens/DirectorGunner).
 
 ## Overview
 
