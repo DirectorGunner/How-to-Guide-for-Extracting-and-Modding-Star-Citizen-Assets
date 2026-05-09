@@ -914,3 +914,9 @@ You can also use my Star Citizen referral code link when creating a new RSI acco
 [Enlist with referral code STAR-GN2F-6JLW](https://robertsspaceindustries.com/enlist?referral=STAR-GN2F-6JLW)
 
 Using a Star Citizen referral code is optional, but new accounts currently receive a referral UEC bonus when signing up with one. As of the latest community referral program information, that bonus is **50,000 UEC**.
+
+If you are looking for people to play Star Citizen with, I am also a moderator in TEST Squadron, and I absolutely recommend it as the best player organization for group play. For new and returning players, having an active group makes a huge difference, and TEST is one of the best places to find backers online at any time for every kind of gameplay loop.
+
+You can join the TEST Squadron Discord here:
+
+[Discord.gg/TEST](https://discord.gg/TEST)
