@@ -10,7 +10,7 @@ set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
 set "DG_VERSION=v1.51"
-set "DG_SCRIPT_BUILD=v28"
+set "DG_SCRIPT_BUILD=v0.36"
 set "DG_STAR_CITIZEN_COMPAT=4.8-and-older"
 set "DG_CLI_SKIPTOOLS=0"
 set "DG_CLI_SELFTEST=0"
@@ -40,7 +40,7 @@ goto :StartLauncher
 cls
 call :PrintIntro
 echo.
-echo Running release v1.51 ^(build v28^) self-test mode. No installers, downloads, PATH edits, repo actions, or build actions will run.
+echo Running release %DG_VERSION% ^(build %DG_SCRIPT_BUILD%^) self-test mode. No installers, downloads, PATH edits, repo actions, or build actions will run.
 echo.
 call :RunPayload -SelfTest -DevRoot "%DG_DEVROOT%"
 set "DG_EXIT=%ERRORLEVEL%"
@@ -860,7 +860,7 @@ $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
 $Script:ReleaseVersion = if ([string]::IsNullOrWhiteSpace($env:DG_VERSION)) { "v1.51" } else { [string]$env:DG_VERSION }
-$Script:InternalBuildVersion = if ([string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { "v28" } else { [string]$env:DG_SCRIPT_BUILD }
+$Script:InternalBuildVersion = if ([string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { "v0.36" } else { [string]$env:DG_SCRIPT_BUILD }
 $Script:StarCitizenCompatibility = if ([string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { "4.8-and-older" } else { [string]$env:DG_STAR_CITIZEN_COMPAT }
 $Script:VSCodeCommandPath = $null
 $Script:SetupSteps = @()
