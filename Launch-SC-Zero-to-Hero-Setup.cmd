@@ -9,9 +9,11 @@ set "DG_LAUNCHER_DIR=%~dp0"
 set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
-set "DG_VERSION=v1.51"
-set "DG_SCRIPT_BUILD=v0.37"
-set "DG_STAR_CITIZEN_COMPAT=4.8-and-older"
+set "DG_SCRIPT_VERSION=v0.38"
+set "DG_SCRIPT_BUILD=%DG_SCRIPT_VERSION%"
+set "DG_VERSION=%DG_SCRIPT_VERSION%"
+set "DG_STAR_CITIZEN_TESTED_BUILDS=LIVE-4.8-and-older"
+set "DG_STAR_CITIZEN_COMPAT=%DG_STAR_CITIZEN_TESTED_BUILDS%"
 set "DG_CLI_SKIPTOOLS=0"
 set "DG_CLI_SELFTEST=0"
 
@@ -40,7 +42,7 @@ goto :StartLauncher
 cls
 call :PrintIntro
 echo.
-echo Running release %DG_VERSION% ^(build %DG_SCRIPT_BUILD%^) self-test mode. No installers, downloads, PATH edits, repo actions, or build actions will run.
+echo Running script version %DG_SCRIPT_VERSION% self-test mode. No installers, downloads, PATH edits, repo actions, or build actions will run.
 echo.
 call :RunPayload -SelfTest -DevRoot "%DG_DEVROOT%"
 set "DG_EXIT=%ERRORLEVEL%"
@@ -859,9 +861,14 @@ $GuideRepoUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-a
 $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
-$Script:ReleaseVersion = if ([string]::IsNullOrWhiteSpace($env:DG_VERSION)) { "v1.51" } else { [string]$env:DG_VERSION }
-$Script:InternalBuildVersion = if ([string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { "v0.37" } else { [string]$env:DG_SCRIPT_BUILD }
-$Script:StarCitizenCompatibility = if ([string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { "4.8-and-older" } else { [string]$env:DG_STAR_CITIZEN_COMPAT }
+$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.38" }
+$testedBuildsFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_TESTED_BUILDS)) { [string]$env:DG_STAR_CITIZEN_TESTED_BUILDS } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { [string]$env:DG_STAR_CITIZEN_COMPAT } else { "LIVE-4.8-and-older" }
+$Script:ScriptVersion = $scriptVersionFromEnv
+$Script:InternalBuildVersion = $Script:ScriptVersion
+$Script:ReleaseVersion = $Script:ScriptVersion
+$Script:StarCitizenTestedBuilds = $testedBuildsFromEnv
+$Script:StarCitizenTestedBuildsDisplay = (($Script:StarCitizenTestedBuilds -replace '-', ' ').Trim())
+$Script:StarCitizenCompatibility = $Script:StarCitizenTestedBuilds
 $Script:VSCodeCommandPath = $null
 $Script:SetupSteps = @()
 $Script:SetupStepLookup = @{}
@@ -1809,10 +1816,10 @@ function Save-SetupState {
         }
 
         $state = [ordered]@{
-            version = [string]$Script:ReleaseVersion
-            scriptVersion = [string]$Script:InternalBuildVersion
-            releaseVersion = [string]$Script:ReleaseVersion
-            starCitizenCompatibility = [string]$Script:StarCitizenCompatibility
+            version = [string]$Script:ScriptVersion
+            scriptVersion = [string]$Script:ScriptVersion
+            starCitizenTestedBuilds = [string]$Script:StarCitizenTestedBuilds
+            starCitizenTestedBuildsDisplay = [string]$Script:StarCitizenTestedBuildsDisplay
             lastRun = (Get-Date).ToString('s')
             devRoot = [string]$DevRoot
             isSandbox = [bool]$Script:IsSandbox
@@ -1879,9 +1886,9 @@ function Save-SetupState {
     } catch {
         try {
             $fallback = [ordered]@{
-                version = [string]$Script:ReleaseVersion
-                scriptVersion = [string]$Script:InternalBuildVersion
-                releaseVersion = [string]$Script:ReleaseVersion
+                version = [string]$Script:ScriptVersion
+                scriptVersion = [string]$Script:ScriptVersion
+                starCitizenTestedBuilds = [string]$Script:StarCitizenTestedBuilds
                 lastRun = (Get-Date).ToString('s')
                 devRoot = [string]$DevRoot
                 warning = 'Reduced setup-state written because full state serialization failed.'
@@ -1976,7 +1983,7 @@ function Set-StepCacheMarker {
     try {
         Ensure-Directory $SetupCacheRoot
         $path = Join-Path $SetupCacheRoot ("$StepId.ok")
-        $data = [ordered]@{ stepId=$StepId; completedAt=(Get-Date).ToString('s'); validationKey=$ValidationKey; scriptVersion=[string]$Script:InternalBuildVersion }
+        $data = [ordered]@{ stepId=$StepId; completedAt=(Get-Date).ToString('s'); validationKey=$ValidationKey; scriptVersion=[string]$Script:ScriptVersion }
         $json = $data | ConvertTo-Json -Depth 4
         $utf8 = New-Object System.Text.UTF8Encoding($false)
         [IO.File]::WriteAllText($path, $json, $utf8)
@@ -4194,7 +4201,8 @@ function Show-SetupPlan {
     }
     Write-Host ""
     Write-Host "Root: $DevRoot"
-    Write-Host ("Release: {0}  |  Build: {1}  |  Star Citizen compatibility: {2}" -f $Script:ReleaseVersion, $Script:InternalBuildVersion, $Script:StarCitizenCompatibility)
+    Write-Host ("Script version: {0}" -f $Script:ScriptVersion)
+    Write-Host ("Star Citizen tested builds: {0}" -f $Script:StarCitizenTestedBuildsDisplay)
     Write-Host "Workspace: $WorkspacePath"
     Write-Host "Banner style: author-selected ($(Resolve-ProgressBannerStyle))"
     if ($Script:HarnessMode) { Write-Host "Mode: safe non-live harness" -ForegroundColor Magenta }
@@ -4215,8 +4223,9 @@ function Get-SetupPlanSnapshot {
     }
     return [ordered]@{
         generatedAt = (Get-Date).ToString('s')
-        releaseVersion = [string]$Script:ReleaseVersion
-        scriptVersion = [string]$Script:InternalBuildVersion
+        scriptVersion = [string]$Script:ScriptVersion
+        starCitizenTestedBuilds = [string]$Script:StarCitizenTestedBuilds
+        starCitizenTestedBuildsDisplay = [string]$Script:StarCitizenTestedBuildsDisplay
         harnessMode = [bool]$Script:HarnessMode
         planOnly = [bool]$Script:PlanOnly
         safety = [ordered]@{
@@ -5910,9 +5919,15 @@ function Install-NodeIntoDevRoot {
         Run-Native -Exe $npm -Arguments @("config", "get", "prefix")
 
         if (-not $SkipCodex) {
-            Run-Native -Exe $npm -Arguments @("install", "-g", "@openai/codex")
             $codexCmd = Join-Path $NpmGlobalDir "codex.cmd"
-            if (Test-Path $codexCmd) { Run-Native -Exe $codexCmd -Arguments @("--version") -IgnoreExitCode }
+            $codexVersionText = if (Test-Path -LiteralPath $codexCmd) { Get-ExecutableOutputText -Exe $codexCmd -Arguments @("--version") } else { "" }
+            if (-not [string]::IsNullOrWhiteSpace($codexVersionText)) {
+                Write-Host "Codex CLI already validates in the npm global dir; skipping npm install." -ForegroundColor Green
+                Run-Native -Exe $codexCmd -Arguments @("--version") -IgnoreExitCode
+            } else {
+                Run-Native -Exe $npm -Arguments @("install", "-g", "@openai/codex")
+                if (Test-Path $codexCmd) { Run-Native -Exe $codexCmd -Arguments @("--version") -IgnoreExitCode }
+            }
         }
     }
 }
@@ -5977,9 +5992,18 @@ function Install-BaseTools {
         Set-UserEnv "CARGO_HOME" $CargoHome
         Set-UserEnv "RUSTUP_HOME" $RustupHome
         Add-UserPath (Join-Path $CargoHome "bin")
-        if (Get-Command rustup -ErrorAction SilentlyContinue) {
-            Write-Host "Rust/rustup already appears to be available. Updating stable toolchain if possible." -ForegroundColor Green
-            Run-Native -Exe "rustup" -Arguments @("update", "stable") -IgnoreExitCode -ActivityNote "Rustup is checking for a newer stable Rust toolchain."
+        $rustupCmd = Get-Command rustup -ErrorAction SilentlyContinue
+        $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+        $rustcCmd = Get-Command rustc -ErrorAction SilentlyContinue
+        if ($rustupCmd -and $cargoCmd -and $rustcCmd) {
+            Write-Host "Rust/rustup/cargo/rustc already validate on PATH. Skipping rustup update on rerun." -ForegroundColor Green
+            Run-Native -Exe "rustup" -Arguments @("--version") -IgnoreExitCode
+            Run-Native -Exe "cargo" -Arguments @("--version") -IgnoreExitCode
+            Run-Native -Exe "rustc" -Arguments @("--version") -IgnoreExitCode
+            return
+        } elseif ($rustupCmd) {
+            Write-Host "rustup is available but cargo/rustc are not fully visible. Selecting stable toolchain without a network update." -ForegroundColor Yellow
+            Run-Native -Exe "rustup" -Arguments @("default", "stable") -IgnoreExitCode
         } else {
             Install-WingetPackage -Id "Rustlang.Rustup"
         }
@@ -8061,7 +8085,7 @@ function Run-FinalVerification {
         }
     }
 
-    if (Test-Path $WorkspacePath) { Write-Host ("Release: {0}  |  Build: {1}  |  Star Citizen compatibility: {2}" -f $Script:ReleaseVersion, $Script:InternalBuildVersion, $Script:StarCitizenCompatibility)
+    if (Test-Path $WorkspacePath) { Write-Host ("Script version: {0}  |  Star Citizen tested builds: {1}" -f $Script:ScriptVersion, $Script:StarCitizenTestedBuildsDisplay)
         Write-Host "Workspace: $WorkspacePath" }
     if (Test-Path $WorkspaceLaunchCmdPath) { Write-Host "Workspace launcher: $WorkspaceLaunchCmdPath" }
     $sbExe = Join-Path $StarCitizenRoot "StarBreaker\target\release\starbreaker.exe"
@@ -8228,7 +8252,7 @@ function Show-StepTimingSummary {
 
 
 function Invoke-SelfTest {
-    Write-Host ("Running release {0} / build {1} safe non-live harness self-tests." -f $Script:ReleaseVersion, $Script:InternalBuildVersion) -ForegroundColor Cyan
+    Write-Host ("Running script version {0} safe non-live harness self-tests. Star Citizen tested builds: {1}" -f $Script:ScriptVersion, $Script:StarCitizenTestedBuildsDisplay) -ForegroundColor Cyan
     $errors = New-Object 'System.Collections.Generic.List[string]'
 
     function Add-SelfTestError([string]$Message) {
@@ -8838,7 +8862,7 @@ function Invoke-SelfTest {
         Assert-SelfTest (Test-InstallerPathUnderRoot -Path $Script:SetupStatePath -Root $Script:HarnessRoot) "Harness setup-state path escaped HarnessRoot."
     } catch { Add-SelfTestError "Setup-state harness self-test failed: $($_.Exception.Message)" }
 
-    try { [void]((@([ordered]@{version=$Script:ReleaseVersion; scriptVersion=$Script:InternalBuildVersion; starCitizenCompatibility=$Script:StarCitizenCompatibility; devRoot=$DevRoot} | ConvertTo-Json -Depth 4) -join [Environment]::NewLine)) } catch { [void]$errors.Add("setup-state serialization selftest threw: $($_.Exception.Message)") }
+    try { [void]((@([ordered]@{version=$Script:ScriptVersion; scriptVersion=$Script:ScriptVersion; starCitizenTestedBuilds=$Script:StarCitizenTestedBuilds; devRoot=$DevRoot} | ConvertTo-Json -Depth 4) -join [Environment]::NewLine)) } catch { [void]$errors.Add("setup-state serialization selftest threw: $($_.Exception.Message)") }
     if ($errors.Count -gt 0) {
         Write-Host "Self-test found issues:" -ForegroundColor Red
         foreach ($e in $errors) { Write-Host "  - $e" -ForegroundColor Red }
@@ -9372,7 +9396,8 @@ try {
             }
             Write-Host "Open a new Developer PowerShell or VS Code terminal so all PATH and environment variable changes are visible."
         }
-        Write-Host ("Release: {0}  |  Build: {1}  |  Star Citizen compatibility: {2}" -f $Script:ReleaseVersion, $Script:InternalBuildVersion, $Script:StarCitizenCompatibility)
+        Write-Host ("Script version: {0}" -f $Script:ScriptVersion)
+        Write-Host ("Star Citizen tested builds: {0}" -f $Script:StarCitizenTestedBuildsDisplay)
         Write-Host "Workspace: $WorkspacePath"
         Write-Host "Workspace launcher: $WorkspaceLaunchCmdPath"
         Write-Host "Guide / updates: $($Script:GuideUrl)"

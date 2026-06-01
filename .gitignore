@@ -1,0 +1,13 @@
+*.log
+*.tmp
+*.partial
+setup-state.json
+.setup-cache/
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+venv/
+target/
+bin/
+obj/
