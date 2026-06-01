@@ -751,11 +751,11 @@ $ProgressPreference = "SilentlyContinue"
 
 $Script:OriginalDevRoot = $DevRoot.TrimEnd([char[]]@('\','/'))
 $Script:OriginalStarCitizenRoot = Join-Path $Script:OriginalDevRoot "starcitizen"
-$Script:AgentWorkRoot = Join-Path $Script:OriginalStarCitizenRoot "work"
+$Script:OriginalAgentWorkRoot = Join-Path $Script:OriginalStarCitizenRoot "work"
 $Script:HarnessTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 
 if (($HarnessMode -or $SelfTest) -and [string]::IsNullOrWhiteSpace($HarnessRoot)) {
-    $HarnessRoot = Join-Path (Join-Path $Script:AgentWorkRoot ("installer-harness-" + $Script:HarnessTimestamp)) "devroot"
+    $HarnessRoot = Join-Path (Join-Path $Script:OriginalAgentWorkRoot ("installer-harness-" + $Script:HarnessTimestamp)) "devroot"
 }
 if ($HarnessMode -or $SelfTest) {
     $HarnessMode = $true
@@ -845,6 +845,13 @@ $ScLogsRoot = Join-Path $ScDataRoot "logs"
 $StarCitizenRoot = Join-Path $DevRoot "starcitizen"
 $WorkspaceRoot = Join-Path $StarCitizenRoot "_workspace"
 $WorkspacePath = Join-Path $WorkspaceRoot "starcitizen-tools.code-workspace"
+$AgentPromptsRoot = Join-Path $StarCitizenRoot "prompts"
+$AgentWorkRoot = Join-Path $StarCitizenRoot "work"
+$AgentOutputRoot = Join-Path $StarCitizenRoot "output"
+$AgentReportsRoot = Join-Path $AgentOutputRoot "reports"
+$WorkspaceLaunchCmdPath = Join-Path $StarCitizenRoot "Open-StarCitizen-Workspace.cmd"
+$ProjectAgentsPath = Join-Path $StarCitizenRoot "AGENTS.md"
+$ProjectClaudePath = Join-Path $StarCitizenRoot "CLAUDE.md"
 $GuideRepoName = "How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets"
 $GuideRepoUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets.git"
 $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
@@ -878,6 +885,13 @@ $Script:NoGlobalGitConfig = [bool]$NoGlobalGitConfig
 $Script:PlanOnly = [bool]$PlanOnly
 $Script:EmitPlanJson = [string]$EmitPlanJson
 $Script:NoPause = [bool]$NoPause
+$Script:AgentPromptsRoot = [string]$AgentPromptsRoot
+$Script:AgentWorkRoot = [string]$AgentWorkRoot
+$Script:AgentOutputRoot = [string]$AgentOutputRoot
+$Script:AgentReportsRoot = [string]$AgentReportsRoot
+$Script:WorkspaceLaunchCmdPath = [string]$WorkspaceLaunchCmdPath
+$Script:ProjectAgentsPath = [string]$ProjectAgentsPath
+$Script:ProjectClaudePath = [string]$ProjectClaudePath
 $Script:GuideUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets"
 $Script:CommandLogCounter = 0
 $Script:LiveDashboardEnabled = $true
@@ -912,6 +926,13 @@ $Script:BranchStates = New-Object 'System.Collections.Generic.List[object]'
 $Script:OrchestrationRepoPath = ""
 $Script:BlenderState = [ordered]@{ status = "NotStarted"; exe = ""; version = ""; installRoot = ""; userConfigRoot = ""; addonLinked = $false; addonLinkType = "" }
 $Script:P4KState = [ordered]@{ status = "NotStarted"; build = ""; source = ""; destination = ""; partialDestination = ""; sizeBytes = 0; spaceWarning = $false; readOnly = $false; skippedReason = ""; channel = ""; starCitizenExe = ""; productVersion = ""; fileVersion = "" }
+$Script:AgentGuidanceState = [ordered]@{
+    status = "NotStarted"; reason = ""
+    promptsRoot = [string]$AgentPromptsRoot; workRoot = [string]$AgentWorkRoot; outputRoot = [string]$AgentOutputRoot; reportsRoot = [string]$AgentReportsRoot
+    agentsPath = [string]$ProjectAgentsPath; agentsStatus = ""; agentsFallbackPath = ""
+    claudePath = [string]$ProjectClaudePath; claudeStatus = ""; claudeFallbackPath = ""
+    launcherPath = [string]$WorkspaceLaunchCmdPath; launcherStatus = ""
+}
 $Script:TutorialRepoState = [ordered]@{ path = ""; originatedFromLauncher = $false; branchStatus = ""; branchStatusReason = "" }
 
 if ($HiddenPreview) {
@@ -957,6 +978,7 @@ function Test-NonLiveInstallerMode {
 function Get-InstallerAllowedWriteRoots {
     $roots = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($Script:HarnessRoot)) { [void]$roots.Add($Script:HarnessRoot) }
+    if (-not [string]::IsNullOrWhiteSpace($Script:OriginalAgentWorkRoot)) { [void]$roots.Add($Script:OriginalAgentWorkRoot) }
     if (-not [string]::IsNullOrWhiteSpace($Script:AgentWorkRoot)) { [void]$roots.Add($Script:AgentWorkRoot) }
     return @($roots.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
 }
@@ -1097,6 +1119,10 @@ function Test-ShouldRunGitVersioning {
     return ($CreateBranches -or $CreateWorkspace -or $BuildStarBreaker -or $InstallBlenderAddon -or $SetupP4K -or $PromptForP4K -or $RunAuroraExample -or (-not [string]::IsNullOrWhiteSpace($DataP4kSource)))
 }
 
+function Test-ShouldWriteAgentGuidance {
+    return ($CloneRepos -or (Test-ShouldRunGitVersioning) -or $CreateWorkspace -or $RunInteractiveAuth -or $OpenWorkspace -or $Script:HarnessMode -or $SelfTest)
+}
+
 function Initialize-SetupPlan {
     $steps = New-Object 'System.Collections.Generic.List[System.Object]'
 
@@ -1121,6 +1147,9 @@ function Initialize-SetupPlan {
     if ($CloneRepos) {
         $steps.Add((New-SetupStepObject -Id "clone-repos" -Name "Clone or validate community repositories"))
         $steps.Add((New-SetupStepObject -Id "clone-guide-repo" -Name "Clone or validate DirectorGunner tutorial repository"))
+    }
+    if (Test-ShouldWriteAgentGuidance) {
+        $steps.Add((New-SetupStepObject -Id "write-agent-guidance" -Name "Create agent guidance, prompt archive, work log, and report folders"))
     }
     if (Test-ShouldRunGitVersioning) {
         $steps.Add((New-SetupStepObject -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches"))
@@ -1394,11 +1423,12 @@ function Get-StepDependencySkipReason {
         "install-rust"         { $depends = @("winget-check") }
         "clone-repos"          { $depends = @("install-git") }
         "clone-guide-repo"     { $depends = @("install-git") }
-        "setup-git-versioning" { $depends = @("install-git", "clone-repos", "clone-guide-repo") }
+        "write-agent-guidance" { $depends = @("clone-guide-repo") }
+        "setup-git-versioning" { $depends = @("install-git", "clone-repos", "clone-guide-repo", "write-agent-guidance") }
         "vscode-extensions"    { $depends = @("write-workspace", "install-vscode") }
         "create-branches"      { $depends = @("install-git", "clone-repos", "clone-guide-repo") }
         "build-starbreaker"    { $depends = @("install-vsbuildtools", "install-rust", "clone-repos", "setup-git-versioning") }
-        "write-workspace"      { $depends = @("clone-repos", "clone-guide-repo", "setup-git-versioning") }
+        "write-workspace"      { $depends = @("clone-repos", "clone-guide-repo", "write-agent-guidance", "setup-git-versioning") }
         "locate-blender"       { $depends = @("setup-git-versioning") }
         "install-blender-addon"{ $depends = @("clone-repos", "setup-git-versioning", "locate-blender") }
         "select-data-p4k"      { $depends = @("setup-git-versioning") }
@@ -1675,6 +1705,22 @@ function Save-SetupState {
                 starCitizenExe = [string]$Script:P4KState.starCitizenExe
                 productVersion = [string]$Script:P4KState.productVersion
                 fileVersion = [string]$Script:P4KState.fileVersion
+            }
+            agentGuidance = [ordered]@{
+                status = [string]$Script:AgentGuidanceState.status
+                reason = [string]$Script:AgentGuidanceState.reason
+                promptsRoot = [string]$Script:AgentGuidanceState.promptsRoot
+                workRoot = [string]$Script:AgentGuidanceState.workRoot
+                outputRoot = [string]$Script:AgentGuidanceState.outputRoot
+                reportsRoot = [string]$Script:AgentGuidanceState.reportsRoot
+                agentsPath = [string]$Script:AgentGuidanceState.agentsPath
+                agentsStatus = [string]$Script:AgentGuidanceState.agentsStatus
+                agentsFallbackPath = [string]$Script:AgentGuidanceState.agentsFallbackPath
+                claudePath = [string]$Script:AgentGuidanceState.claudePath
+                claudeStatus = [string]$Script:AgentGuidanceState.claudeStatus
+                claudeFallbackPath = [string]$Script:AgentGuidanceState.claudeFallbackPath
+                launcherPath = [string]$Script:AgentGuidanceState.launcherPath
+                launcherStatus = [string]$Script:AgentGuidanceState.launcherStatus
             }
             stepTimings = @($stepList.ToArray())
             completedSteps = @($completedList.ToArray())
@@ -3992,11 +4038,17 @@ function Get-SetupPlanSnapshot {
             originalDevRoot = [string]$Script:OriginalDevRoot
             devRoot = [string]$DevRoot
             harnessRoot = [string]$Script:HarnessRoot
+            originalAgentWorkRoot = [string]$Script:OriginalAgentWorkRoot
+            agentPromptsRoot = [string]$AgentPromptsRoot
             agentWorkRoot = [string]$Script:AgentWorkRoot
+            agentOutputRoot = [string]$AgentOutputRoot
+            agentReportsRoot = [string]$AgentReportsRoot
             starCitizenRoot = [string]$StarCitizenRoot
             scDataRoot = [string]$ScDataRoot
             scWorkRoot = [string]$ScWorkRoot
             workspacePath = [string]$WorkspacePath
+            workspaceLaunchCmdPath = [string]$WorkspaceLaunchCmdPath
+            guideRepoPath = [string]$GuideRepoPath
             setupStatePath = [string]$Script:SetupStatePath
         }
         steps = @($stepList.ToArray())
@@ -4129,6 +4181,7 @@ function Start-SetupTranscriptAndEnvironment {
     Set-UserEnv "SC_P4K_ROOT" (To-ForwardSlashPath $ScP4kRoot)
     Set-UserEnv "SC_EXPORT_ROOT" (To-ForwardSlashPath $ScExportRoot)
     Set-UserEnv "SC_WORK_ROOT" (To-ForwardSlashPath $ScWorkRoot)
+    Set-AgentEnvironmentVariables -PersistUser:((-not $Script:NoUserEnvWrites) -and (-not (Test-NonLiveInstallerMode)))
 
     Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
     Write-Host "Admin: $(Test-IsAdmin)"
@@ -5563,7 +5616,11 @@ function Set-RepoLocalGitIdentity {
 
     $canReadGlobal = -not $Script:NoGlobalGitConfig
     if (-not $canReadGlobal -and -not [string]::IsNullOrWhiteSpace($env:GIT_CONFIG_GLOBAL)) {
-        try { $canReadGlobal = (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:HarnessRoot) -or (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:AgentWorkRoot) } catch { $canReadGlobal = $false }
+        try {
+            $canReadGlobal = (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:HarnessRoot) -or
+                (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:OriginalAgentWorkRoot) -or
+                (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:AgentWorkRoot)
+        } catch { $canReadGlobal = $false }
     }
     if ($canReadGlobal) {
         try { $globalName = ((& git config --global --get user.name 2>$null) -join "").Trim() } catch { }
@@ -6058,6 +6115,228 @@ function To-ForwardSlashPath {
     return ($Path -replace "\\", "/")
 }
 
+function Get-AgentEnvironmentValues {
+    return [ordered]@{
+        SC_STAR_CITIZEN_ROOT = (To-ForwardSlashPath $StarCitizenRoot)
+        SC_PROMPTS_ROOT = (To-ForwardSlashPath $AgentPromptsRoot)
+        SC_AGENT_WORK_ROOT = (To-ForwardSlashPath $AgentWorkRoot)
+        SC_REPORTS_ROOT = (To-ForwardSlashPath $AgentReportsRoot)
+        SC_WORKSPACE_PATH = (To-ForwardSlashPath $WorkspacePath)
+        SC_GUIDE_REPO = (To-ForwardSlashPath $GuideRepoPath)
+    }
+}
+
+function Set-AgentEnvironmentVariables {
+    param([switch]$PersistUser)
+    $values = Get-AgentEnvironmentValues
+    foreach ($name in @($values.Keys)) {
+        $value = [string]$values[$name]
+        Set-Item -Path ("Env:" + $name) -Value $value
+        if ($PersistUser -and (-not $Script:NoUserEnvWrites) -and (-not (Test-NonLiveInstallerMode))) {
+            Set-UserEnv $name $value
+        }
+    }
+}
+
+function Ensure-AgentSupportFolders {
+    @(
+        $StarCitizenRoot,
+        $AgentPromptsRoot,
+        $AgentWorkRoot,
+        $AgentOutputRoot,
+        $AgentReportsRoot
+    ) | ForEach-Object { Ensure-Directory $_ }
+}
+
+function Get-AgentGuidanceContent {
+    param([ValidateSet("AGENTS","CLAUDE")][string]$Kind = "AGENTS")
+
+    $title = if ($Kind -eq "CLAUDE") { "CLAUDE.md" } else { "AGENTS.md" }
+    $marker = "SC-ZERO-TO-HERO-GENERATED: agent-guidance v1"
+    $devRootPath = [string]$DevRoot
+    $starCitizenRootPath = [string]$StarCitizenRoot
+    $guideRepo = [string]$GuideRepoPath
+    $workspace = [string]$WorkspacePath
+    $pythonVenv = [string]$PythonVenvDir
+    $promptsRoot = [string]$AgentPromptsRoot
+    $agentWork = [string]$AgentWorkRoot
+    $agentOutput = [string]$AgentOutputRoot
+    $reportsRoot = [string]$AgentReportsRoot
+    $scData = [string]$ScDataRoot
+    $scWork = [string]$ScWorkRoot
+
+    return @"
+# $title
+
+$marker
+
+This local guidance file was generated by the Star Citizen Zero to Hero installer for the selected DevRoot.
+
+## Resolved Local Paths
+
+- DevRoot: $devRootPath
+- StarCitizenRoot: $starCitizenRootPath
+- GuideRepoPath: $guideRepo
+- WorkspacePath: $workspace
+- PythonVenvDir: $pythonVenv
+- AgentPromptsRoot: $promptsRoot
+- AgentWorkRoot: $agentWork
+- AgentOutputRoot: $agentOutput
+- AgentReportsRoot: $reportsRoot
+- ScDataRoot: $scData
+- ScWorkRoot: $scWork
+
+## Path Rules
+
+- Read and write only inside explicitly allowed task roots.
+- Treat AgentWorkRoot as the agent work-log and validation-artifact area.
+- Treat ScWorkRoot as Star Citizen data/tool working storage, not as the agent log area.
+- Do not use arbitrary user profile, Windows, Program Files, AppData, Downloads, Desktop, unrelated drives, or live game-install paths unless the current prompt explicitly authorizes that exact access.
+- Do not access, copy, hash, parse, export, or inspect a real Data.p4k unless the current prompt explicitly authorizes it.
+
+## Prompt, Log, And Report Protocol
+
+- Archive the active prompt under AgentPromptsRoot before source edits when a task requires it.
+- Keep timestamped work logs under AgentWorkRoot.
+- Write final reports under AgentReportsRoot.
+- Log commands with working directory, command text, exit code, concise output summary, files inspected, files modified, and decision-log entries.
+- Do not log hidden or private chain-of-thought; log concise rationale and observable decisions only.
+
+## Safety Rules
+
+- Do not install, download, clone, launch GUIs, or use network actions unless explicitly authorized.
+- Do not run force Git operations, git reset, git clean, git rebase, git push, or remote mutation unless explicitly authorized.
+- Do not change global Git config. Repo-local Git config is acceptable only for safe target repos when the task calls for it.
+- Do not commit or push unless explicitly authorized.
+- Prefer inert validation: git status, git diff, git diff --check, parser checks, HarnessMode PlanOnly, and HarnessMode SelfTest.
+
+## Final Reports
+
+- Include prompt path, work log path, target file, branch/status summary, guardrails honored, files changed, diff summary, validation results, skipped validation with reasons, risks, rollback notes, and the appended work log when the task requires a formal report.
+"@
+}
+
+function Get-GeneratedGuidanceFallbackPath {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $parent = Split-Path $Path -Parent
+    $name = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $extension = [IO.Path]::GetExtension($Path)
+    return (Join-Path $parent ($name + ".generated" + $extension))
+}
+
+function Write-GeneratedGuidanceFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$Content,
+        [Parameter(Mandatory=$true)][string]$Label
+    )
+    $marker = "SC-ZERO-TO-HERO-GENERATED: agent-guidance v1"
+    $fallbackPath = Get-GeneratedGuidanceFallbackPath -Path $Path
+    if ($DryRun) {
+        Write-Host ("[dry-run] Would write generated {0}: {1}" -f $Label, $Path)
+        return [pscustomobject]@{ Status = "Preview"; Path = $Path; FallbackPath = ""; Reason = "" }
+    }
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-InstallerFile -Path $Path -Text $Content
+        return [pscustomobject]@{ Status = "Created"; Path = $Path; FallbackPath = ""; Reason = "" }
+    }
+
+    $existing = ""
+    try { $existing = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop } catch { $existing = "" }
+    if ($existing -match [regex]::Escape($marker)) {
+        Write-InstallerFile -Path $Path -Text $Content
+        return [pscustomobject]@{ Status = "Updated"; Path = $Path; FallbackPath = ""; Reason = "" }
+    }
+
+    Write-InstallerFile -Path $fallbackPath -Text $Content
+    return [pscustomobject]@{
+        Status = "WARN"
+        Path = $Path
+        FallbackPath = $fallbackPath
+        Reason = "$Label exists without the generated marker; preserved it and wrote generated fallback."
+    }
+}
+
+function Write-VSCodeWorkspaceLauncher {
+    $workspace = [string]$WorkspacePath
+    $launcherText = @"
+@echo off
+setlocal
+set "SC_WORKSPACE=$workspace"
+
+set "CODE_CMD="
+if defined SC_VSCODE_CODE (
+    if exist "%SC_VSCODE_CODE%" set "CODE_CMD=%SC_VSCODE_CODE%"
+)
+if not defined CODE_CMD (
+    where code.cmd >nul 2>nul
+    if not errorlevel 1 set "CODE_CMD=code.cmd"
+)
+if not defined CODE_CMD (
+    where code >nul 2>nul
+    if not errorlevel 1 set "CODE_CMD=code"
+)
+if not defined CODE_CMD (
+    echo VS Code CLI was not found.
+    echo Install VS Code or set SC_VSCODE_CODE to code.cmd, then reopen:
+    echo   %SC_WORKSPACE%
+    exit /b 1
+)
+
+"%CODE_CMD%" "%SC_WORKSPACE%"
+exit /b %ERRORLEVEL%
+"@
+
+    if ($DryRun) {
+        Write-Host "[dry-run] Would write workspace launcher: $WorkspaceLaunchCmdPath"
+        return "Preview"
+    }
+    Write-InstallerFile -Path $WorkspaceLaunchCmdPath -Text $launcherText
+    return "Written"
+}
+
+function Write-AgentGuidanceFiles {
+    Write-Step "Creating agent guidance and support folders"
+    Ensure-AgentSupportFolders
+    Set-AgentEnvironmentVariables -PersistUser:((-not $Script:NoUserEnvWrites) -and (-not (Test-NonLiveInstallerMode)))
+
+    $agentsResult = Write-GeneratedGuidanceFile -Path $ProjectAgentsPath -Content (Get-AgentGuidanceContent -Kind "AGENTS") -Label "AGENTS.md"
+    $claudeResult = Write-GeneratedGuidanceFile -Path $ProjectClaudePath -Content (Get-AgentGuidanceContent -Kind "CLAUDE") -Label "CLAUDE.md"
+    $launcherStatus = Write-VSCodeWorkspaceLauncher
+
+    $warnings = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($result in @($agentsResult, $claudeResult)) {
+        if ([string]$result.Status -eq "WARN") { [void]$warnings.Add([string]$result.Reason) }
+    }
+
+    $Script:AgentGuidanceState = [ordered]@{
+        status = if ($warnings.Count -gt 0) { "WARN" } elseif ($DryRun) { "Preview" } else { "OK" }
+        reason = if ($warnings.Count -gt 0) { ($warnings.ToArray() -join " ") } else { "" }
+        promptsRoot = [string]$AgentPromptsRoot
+        workRoot = [string]$AgentWorkRoot
+        outputRoot = [string]$AgentOutputRoot
+        reportsRoot = [string]$AgentReportsRoot
+        agentsPath = [string]$agentsResult.Path
+        agentsStatus = [string]$agentsResult.Status
+        agentsFallbackPath = [string]$agentsResult.FallbackPath
+        claudePath = [string]$claudeResult.Path
+        claudeStatus = [string]$claudeResult.Status
+        claudeFallbackPath = [string]$claudeResult.FallbackPath
+        launcherPath = [string]$WorkspaceLaunchCmdPath
+        launcherStatus = [string]$launcherStatus
+    }
+
+    Write-Host ("Agent prompt archive: {0}" -f $AgentPromptsRoot) -ForegroundColor Green
+    Write-Host ("Agent work logs: {0}" -f $AgentWorkRoot) -ForegroundColor Green
+    Write-Host ("Output reports: {0}" -f $AgentReportsRoot) -ForegroundColor Green
+    Write-Host ("Workspace launcher: {0}" -f $WorkspaceLaunchCmdPath) -ForegroundColor Green
+    if ($warnings.Count -gt 0) {
+        $Script:CurrentStepResultStatus = "WARN"
+        $Script:CurrentStepResultReason = ($warnings.ToArray() -join " ")
+    }
+}
+
 function Write-VSCodeWorkspace {
     Write-Step "Creating VS Code workspace"
     Ensure-Directory $WorkspaceRoot
@@ -6067,57 +6346,72 @@ function Write-VSCodeWorkspace {
     $vsDevShell = To-ForwardSlashPath (Get-VsDevShellPath)
     $pythonVenv = To-ForwardSlashPath (Join-Path $PythonVenvDir "Scripts\python.exe")
 
-    $workspaceJson = @"
-{
-  "folders": [
-    { "name": "StarBreaker", "path": "$starRoot/StarBreaker" },
-    { "name": "Blender-Tools", "path": "$starRoot/Blender-Tools" },
-    { "name": "unp4k", "path": "$starRoot/unp4k" },
-    { "name": "Cryengine-Converter", "path": "$starRoot/Cryengine-Converter" },
-    { "name": "SCTextureConverter", "path": "$starRoot/SCTextureConverter" },
-    { "name": "Zero to Hero Guide", "path": "$starRoot/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets" },
-    { "name": "scdatatools", "path": "$starRoot/scdatatools" },
-    { "name": "qtvscodestyle", "path": "$starRoot/qtvscodestyle" },
-    { "name": "scdata", "path": "$dev/scdata" }
-  ],
-  "settings": {
-    "terminal.integrated.defaultProfile.windows": "Developer PowerShell for VS 2022",
-    "terminal.integrated.profiles.windows": {
-      "Developer PowerShell for VS 2022": {
-        "source": "PowerShell",
-        "args": [
-          "-NoExit",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          "& '$vsDevShell' -Arch amd64"
-        ]
-      },
-      "PowerShell": {
-        "source": "PowerShell"
-      }
-    },
-    "terminal.integrated.env.windows": {
-      "SC_DEV_ROOT": "$dev",
-      "SC_DATA_ROOT": "$dev/scdata",
-      "SC_P4K_ROOT": "$dev/scdata/p4k",
-      "SC_EXPORT_ROOT": "$dev/scdata/exports",
-      "SC_WORK_ROOT": "$dev/scdata/work",
-      "SC_BUILD": "$StarCitizenBuild",
-      "SC_DATA_P4K": "$(To-ForwardSlashPath (Join-Path (Join-Path $ScP4kRoot $StarCitizenBuild) 'Data.p4k'))",
-      "SC_BLENDER_EXE": "$(To-ForwardSlashPath $Script:BlenderState.exe)",
-      "SC_BLENDER_VERSION": "$($Script:BlenderState.version)"
-    },
-    "python.defaultInterpreterPath": "$pythonVenv",
-    "files.exclude": {
-      "**/target": true,
-      "**/bin": true,
-      "**/obj": true,
-      "**/__pycache__": true
+    $folders = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($folder in @(
+        @{ name = "Star Citizen Workspace Control"; path = $starRoot },
+        @{ name = "Prompt Archive"; path = (To-ForwardSlashPath $AgentPromptsRoot) },
+        @{ name = "Agent Work Logs"; path = (To-ForwardSlashPath $AgentWorkRoot) },
+        @{ name = "Output Reports"; path = (To-ForwardSlashPath $AgentReportsRoot) },
+        @{ name = "StarBreaker"; path = "$starRoot/StarBreaker" },
+        @{ name = "Blender-Tools"; path = "$starRoot/Blender-Tools" },
+        @{ name = "unp4k"; path = "$starRoot/unp4k" },
+        @{ name = "Cryengine-Converter"; path = "$starRoot/Cryengine-Converter" },
+        @{ name = "SCTextureConverter"; path = "$starRoot/SCTextureConverter" },
+        @{ name = "Zero to Hero Guide"; path = "$starRoot/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets" },
+        @{ name = "scdatatools"; path = "$starRoot/scdatatools" },
+        @{ name = "qtvscodestyle"; path = "$starRoot/qtvscodestyle" },
+        @{ name = "scdata"; path = "$dev/scdata" }
+    )) {
+        [void]$folders.Add([ordered]@{ name = [string]$folder.name; path = [string]$folder.path })
     }
-  }
-}
-"@
+
+    $terminalEnv = [ordered]@{
+        SC_DEV_ROOT = $dev
+        SC_DATA_ROOT = "$dev/scdata"
+        SC_P4K_ROOT = "$dev/scdata/p4k"
+        SC_EXPORT_ROOT = "$dev/scdata/exports"
+        SC_WORK_ROOT = "$dev/scdata/work"
+        SC_STAR_CITIZEN_ROOT = (To-ForwardSlashPath $StarCitizenRoot)
+        SC_PROMPTS_ROOT = (To-ForwardSlashPath $AgentPromptsRoot)
+        SC_AGENT_WORK_ROOT = (To-ForwardSlashPath $AgentWorkRoot)
+        SC_REPORTS_ROOT = (To-ForwardSlashPath $AgentReportsRoot)
+        SC_WORKSPACE_PATH = (To-ForwardSlashPath $WorkspacePath)
+        SC_GUIDE_REPO = (To-ForwardSlashPath $GuideRepoPath)
+        SC_BUILD = $StarCitizenBuild
+    }
+
+    $confirmedP4k = ""
+    try {
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:P4KState.destination)) { $confirmedP4k = [string]$Script:P4KState.destination }
+        elseif (-not [string]::IsNullOrWhiteSpace([string]$Script:P4KState.source) -and [string]$Script:P4KState.status -eq "UsingExisting") { $confirmedP4k = [string]$Script:P4KState.source }
+    } catch { $confirmedP4k = "" }
+    if (-not [string]::IsNullOrWhiteSpace($confirmedP4k)) { $terminalEnv["SC_DATA_P4K"] = (To-ForwardSlashPath $confirmedP4k) }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Script:BlenderState.exe)) { $terminalEnv["SC_BLENDER_EXE"] = (To-ForwardSlashPath ([string]$Script:BlenderState.exe)) }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Script:BlenderState.version)) { $terminalEnv["SC_BLENDER_VERSION"] = [string]$Script:BlenderState.version }
+
+    $workspaceObject = [ordered]@{
+        folders = @($folders.ToArray())
+        settings = [ordered]@{
+            "terminal.integrated.defaultProfile.windows" = "Developer PowerShell for VS 2022"
+            "terminal.integrated.profiles.windows" = [ordered]@{
+                "Developer PowerShell for VS 2022" = [ordered]@{
+                    source = "PowerShell"
+                    args = @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "& '$vsDevShell' -Arch amd64")
+                }
+                PowerShell = [ordered]@{ source = "PowerShell" }
+            }
+            "terminal.integrated.env.windows" = $terminalEnv
+            "python.defaultInterpreterPath" = $pythonVenv
+            "files.exclude" = [ordered]@{
+                "**/target" = $true
+                "**/bin" = $true
+                "**/obj" = $true
+                "**/__pycache__" = $true
+            }
+        }
+    }
+
+    $workspaceJson = [string]($workspaceObject | ConvertTo-Json -Depth 12)
 
     if ($DryRun) {
         Write-Host "[dry-run] Would write workspace: $WorkspacePath"
@@ -7174,6 +7468,23 @@ function Show-SetupOutcomeSummary {
         }
     }
 
+    if ([string]$Script:AgentGuidanceState.status -ne "NotStarted") {
+        $agentColor = switch ([string]$Script:AgentGuidanceState.status) {
+            "OK" { "Green" }
+            "Preview" { "DarkCyan" }
+            "WARN" { "Yellow" }
+            default { "DarkYellow" }
+        }
+        Write-Host "AGENT GUIDANCE STATUS:" -ForegroundColor Cyan
+        Write-Host ("  - Guidance: {0}" -f [string]$Script:AgentGuidanceState.status) -ForegroundColor $agentColor
+        Write-Host ("    AGENTS.md: {0} ({1})" -f [string]$Script:AgentGuidanceState.agentsStatus, [string]$Script:AgentGuidanceState.agentsPath) -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AgentGuidanceState.agentsFallbackPath)) { Write-Host ("    AGENTS fallback: " + [string]$Script:AgentGuidanceState.agentsFallbackPath) -ForegroundColor DarkYellow }
+        Write-Host ("    CLAUDE.md: {0} ({1})" -f [string]$Script:AgentGuidanceState.claudeStatus, [string]$Script:AgentGuidanceState.claudePath) -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AgentGuidanceState.claudeFallbackPath)) { Write-Host ("    CLAUDE fallback: " + [string]$Script:AgentGuidanceState.claudeFallbackPath) -ForegroundColor DarkYellow }
+        Write-Host ("    Launcher: {0} ({1})" -f [string]$Script:AgentGuidanceState.launcherStatus, [string]$Script:AgentGuidanceState.launcherPath) -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AgentGuidanceState.reason)) { Write-Host ("    Reason: " + [string]$Script:AgentGuidanceState.reason) -ForegroundColor DarkYellow }
+    }
+
     if ($failureCount -gt 0 -or $skipCount -gt 0 -or $warningCount -gt 0) {
         Write-Host ""
         Write-Host "Recommended next action:" -ForegroundColor Cyan
@@ -7216,6 +7527,7 @@ function Run-FinalVerification {
 
     if (Test-Path $WorkspacePath) { Write-Host ("Release: {0}  |  Build: {1}  |  Star Citizen compatibility: {2}" -f $Script:ReleaseVersion, $Script:InternalBuildVersion, $Script:StarCitizenCompatibility)
         Write-Host "Workspace: $WorkspacePath" }
+    if (Test-Path $WorkspaceLaunchCmdPath) { Write-Host "Workspace launcher: $WorkspaceLaunchCmdPath" }
     $sbExe = Join-Path $StarCitizenRoot "StarBreaker\target\release\starbreaker.exe"
     if (Test-Path $sbExe) { Write-Host "StarBreaker executable: $sbExe" }
 }
@@ -7415,10 +7727,14 @@ function Invoke-SelfTest {
     try {
         Initialize-SetupPlan
         $ids = @($Script:SetupSteps | ForEach-Object { [string]$_.Id })
+        $agentIndex = [Array]::IndexOf($ids, "write-agent-guidance")
         $gitIndex = [Array]::IndexOf($ids, "setup-git-versioning")
+        Assert-SelfTest ($agentIndex -ge 0) "write-agent-guidance was missing from the setup plan."
         Assert-SelfTest ($gitIndex -ge 0) "setup-git-versioning was missing from the setup plan."
+        if ($gitIndex -ge 0) { Assert-SelfTest ($agentIndex -ge 0 -and $agentIndex -lt $gitIndex) "write-agent-guidance did not appear before setup-git-versioning." }
         foreach ($later in @("write-workspace","vscode-extensions","build-starbreaker","locate-blender","install-blender-addon","select-data-p4k","verify-sc-build","p4k-explore","aurora-example")) {
             $idx = [Array]::IndexOf($ids, $later)
+            if ($idx -ge 0) { Assert-SelfTest ($agentIndex -ge 0 -and $agentIndex -lt $idx) "write-agent-guidance did not appear before $later." }
             if ($idx -ge 0) { Assert-SelfTest ($gitIndex -ge 0 -and $gitIndex -lt $idx) "setup-git-versioning did not appear before $later." }
         }
     } catch { Add-SelfTestError "Setup plan ordering self-test failed: $($_.Exception.Message)" }
@@ -7503,18 +7819,63 @@ function Invoke-SelfTest {
     } catch { [void]$errors.Add("Blender path selftest failed: $($_.Exception.Message)") }
 
     try {
+        Write-AgentGuidanceFiles
+        $marker = "SC-ZERO-TO-HERO-GENERATED: agent-guidance v1"
+        Assert-SelfTest (Test-Path -LiteralPath $ProjectAgentsPath) "Harness AGENTS.md was not written."
+        Assert-SelfTest (Test-Path -LiteralPath $ProjectClaudePath) "Harness CLAUDE.md was not written."
+        Assert-SelfTest (Test-Path -LiteralPath $WorkspaceLaunchCmdPath) "Harness workspace launcher was not written."
+        foreach ($requiredDir in @($AgentPromptsRoot, $AgentWorkRoot, $AgentOutputRoot, $AgentReportsRoot)) {
+            Assert-SelfTest (Test-InstallerPathUnderRoot -Path $requiredDir -Root $Script:HarnessRoot) "Agent support directory escaped HarnessRoot: $requiredDir"
+            Assert-SelfTest (Test-Path -LiteralPath $requiredDir) "Agent support directory was not created: $requiredDir"
+        }
+        $agentsText = Get-Content -LiteralPath $ProjectAgentsPath -Raw
+        $claudeText = Get-Content -LiteralPath $ProjectClaudePath -Raw
+        $launcherText = Get-Content -LiteralPath $WorkspaceLaunchCmdPath -Raw
+        Assert-SelfTest ($agentsText.Contains($marker)) "Harness AGENTS.md missing generated marker."
+        Assert-SelfTest ($claudeText.Contains($marker)) "Harness CLAUDE.md missing generated marker."
+        Assert-SelfTest ($launcherText.Contains($WorkspacePath)) "Workspace launcher does not point at the harness workspace path."
+        $realScWork = Join-Path (Join-Path $Script:OriginalDevRoot "scdata") "work"
+        foreach ($text in @($agentsText, $claudeText, $launcherText)) {
+            Assert-SelfTest (-not $text.Contains($realScWork)) "Generated harness file referenced the real ScWorkRoot."
+            Assert-SelfTest (-not $text.Contains((To-ForwardSlashPath $realScWork))) "Generated harness file referenced the real ScWorkRoot with forward slashes."
+        }
+
+        $blockedDir = Join-Path $Script:HarnessRoot "agent-guidance-overwrite-test"
+        Ensure-Directory $blockedDir
+        $blockedAgents = Join-Path $blockedDir "AGENTS.md"
+        Write-InstallerFile -Path $blockedAgents -Text "Human-authored guidance`r`n"
+        $blockedResult = Write-GeneratedGuidanceFile -Path $blockedAgents -Content (Get-AgentGuidanceContent -Kind "AGENTS") -Label "AGENTS.md"
+        Assert-SelfTest ([string]$blockedResult.Status -eq "WARN") "Unmarked AGENTS.md did not produce WARN fallback behavior."
+        Assert-SelfTest ((Get-Content -LiteralPath $blockedAgents -Raw) -eq "Human-authored guidance`r`n") "Unmarked AGENTS.md was overwritten."
+        Assert-SelfTest (Test-Path -LiteralPath ([string]$blockedResult.FallbackPath)) "Generated AGENTS fallback was not written."
+    } catch { Add-SelfTestError "Agent guidance harness self-test failed: $($_.Exception.Message)" }
+
+    try {
         Write-VSCodeWorkspace
         Assert-SelfTest (Test-Path -LiteralPath $WorkspacePath) "Harness workspace file was not written."
-        $workspace = Get-Content -LiteralPath $WorkspacePath -Raw | ConvertFrom-Json
-        $expectedStarRoot = To-ForwardSlashPath $StarCitizenRoot
+        $workspaceText = Get-Content -LiteralPath $WorkspacePath -Raw
+        $workspace = $workspaceText | ConvertFrom-Json
+        $expectedHarnessRoot = To-ForwardSlashPath $Script:HarnessRoot
+        $folderNames = @($workspace.folders | ForEach-Object { [string]$_.name })
+        foreach ($expectedName in @("Star Citizen Workspace Control","Prompt Archive","Agent Work Logs","Output Reports","StarBreaker","Blender-Tools","unp4k","Cryengine-Converter","SCTextureConverter","Zero to Hero Guide","scdatatools","qtvscodestyle","scdata")) {
+            Assert-SelfTest ($folderNames -contains $expectedName) "Workspace missing folder: $expectedName"
+        }
         foreach ($folder in @($workspace.folders)) {
             $path = [string]$folder.path
-            if ([string]$folder.name -eq "scdata") {
-                Assert-SelfTest ($path.StartsWith((To-ForwardSlashPath $ScDataRoot), [StringComparison]::OrdinalIgnoreCase)) "Workspace scdata folder did not use harness ScDataRoot."
-            } else {
-                Assert-SelfTest ($path.StartsWith($expectedStarRoot, [StringComparison]::OrdinalIgnoreCase)) "Workspace folder escaped harness StarCitizenRoot: $path"
-            }
+            Assert-SelfTest ($path.StartsWith($expectedHarnessRoot, [StringComparison]::OrdinalIgnoreCase)) "Workspace folder escaped harness root: $path"
         }
+        $envBlock = $workspace.settings.'terminal.integrated.env.windows'
+        $envNames = @($envBlock.PSObject.Properties.Name)
+        foreach ($expectedEnv in @("SC_STAR_CITIZEN_ROOT","SC_PROMPTS_ROOT","SC_AGENT_WORK_ROOT","SC_REPORTS_ROOT","SC_WORKSPACE_PATH","SC_GUIDE_REPO")) {
+            Assert-SelfTest ($envNames -contains $expectedEnv) "Workspace terminal env missing $expectedEnv."
+            $envValue = ""
+            try { $envValue = [string]$envBlock.PSObject.Properties[$expectedEnv].Value } catch { $envValue = "" }
+            Assert-SelfTest ($envValue.StartsWith($expectedHarnessRoot, [StringComparison]::OrdinalIgnoreCase)) "Workspace env $expectedEnv did not use harness root."
+        }
+        Assert-SelfTest (-not ($envNames -contains "SC_BLENDER_EXE")) "Workspace wrote blank SC_BLENDER_EXE."
+        Assert-SelfTest (-not ($envNames -contains "SC_BLENDER_VERSION")) "Workspace wrote blank SC_BLENDER_VERSION."
+        Assert-SelfTest (-not ($envNames -contains "SC_DATA_P4K")) "Workspace wrote unconfirmed SC_DATA_P4K."
+        Assert-SelfTest (-not $workspaceText.Contains((To-ForwardSlashPath (Join-Path (Join-Path $Script:OriginalDevRoot "scdata") "work")))) "Workspace referenced the real ScWorkRoot."
     } catch { Add-SelfTestError "Workspace generation self-test failed: $($_.Exception.Message)" }
 
     try {
@@ -7995,6 +8356,9 @@ try {
         Invoke-SetupStep -Id "clone-repos" -Name "Clone or validate community repositories" -ScriptBlock { Sync-Repositories }
         Invoke-SetupStep -Id "clone-guide-repo" -Name "Clone or validate DirectorGunner tutorial repository" -ScriptBlock { Sync-GuideRepository }
     }
+    if (Test-ShouldWriteAgentGuidance) {
+        Invoke-SetupStep -Id "write-agent-guidance" -Name "Create agent guidance, prompt archive, work log, and report folders" -ScriptBlock { Write-AgentGuidanceFiles }
+    }
     if (Test-ShouldRunGitVersioning) {
         Invoke-SetupStep -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches" -ScriptBlock { Initialize-GitVersioning }
     }
@@ -8056,6 +8420,7 @@ try {
         }
         Write-Host ("Release: {0}  |  Build: {1}  |  Star Citizen compatibility: {2}" -f $Script:ReleaseVersion, $Script:InternalBuildVersion, $Script:StarCitizenCompatibility)
         Write-Host "Workspace: $WorkspacePath"
+        Write-Host "Workspace launcher: $WorkspaceLaunchCmdPath"
         Write-Host "Guide / updates: $($Script:GuideUrl)"
         if (-not [string]::IsNullOrWhiteSpace($Script:TutorialRepoState.path)) { Write-Host "Local guide repo: $($Script:TutorialRepoState.path)" }
         if (-not [string]::IsNullOrWhiteSpace($Script:SetupStatePath)) { Write-Host "Setup state: $($Script:SetupStatePath)" }
