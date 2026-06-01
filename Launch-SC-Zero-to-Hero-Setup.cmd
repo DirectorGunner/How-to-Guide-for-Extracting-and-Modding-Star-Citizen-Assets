@@ -664,6 +664,14 @@ exit 1
 
 .EXAMPLE
   Run the launcher preview mode to review the visual step flow without installing anything.
+
+.EXAMPLE
+  Emit a non-live setup plan snapshot without installing, downloading, cloning, launching GUIs, or touching Data.p4k:
+    .\SC-Zero-to-Hero-Setup.ps1 -HarnessMode -PlanOnly -EmitPlanJson "D:\dev\starcitizen\work\plan.json" -NoPause
+
+.EXAMPLE
+  Run the safe non-live harness self-test under a fake DevRoot:
+    .\SC-Zero-to-Hero-Setup.ps1 -HarnessMode -SelfTest -NoPause
 #>
 
 [CmdletBinding()]
@@ -702,6 +710,16 @@ param(
     [switch]$AllowNonAdmin,
     [switch]$DryRun,
     [switch]$HiddenPreview,
+    [switch]$HarnessMode,
+    [string]$HarnessRoot = "",
+    [switch]$NoExternalActions,
+    [switch]$NoNetwork,
+    [switch]$NoGui,
+    [switch]$NoUserEnvWrites,
+    [switch]$NoGlobalGitConfig,
+    [switch]$PlanOnly,
+    [string]$EmitPlanJson = "",
+    [switch]$NoPause,
 
     [switch]$NoProgressHeader,
     [ValidateRange(20,100)][int]$ProgressBarWidth = 42,
@@ -730,6 +748,50 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$Script:OriginalDevRoot = $DevRoot.TrimEnd([char[]]@('\','/'))
+$Script:OriginalStarCitizenRoot = Join-Path $Script:OriginalDevRoot "starcitizen"
+$Script:AgentWorkRoot = Join-Path $Script:OriginalStarCitizenRoot "work"
+$Script:HarnessTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+
+if (($HarnessMode -or $SelfTest) -and [string]::IsNullOrWhiteSpace($HarnessRoot)) {
+    $HarnessRoot = Join-Path (Join-Path $Script:AgentWorkRoot ("installer-harness-" + $Script:HarnessTimestamp)) "devroot"
+}
+if ($HarnessMode -or $SelfTest) {
+    $HarnessMode = $true
+    $HarnessRoot = ([IO.Path]::GetFullPath($HarnessRoot.Trim().Trim('"'))).TrimEnd([char[]]@('\','/'))
+    $realDevRoot = ([IO.Path]::GetFullPath($Script:OriginalDevRoot)).TrimEnd([char[]]@('\','/'))
+    $realProjectRoot = ([IO.Path]::GetFullPath($Script:OriginalStarCitizenRoot)).TrimEnd([char[]]@('\','/'))
+    if ($HarnessRoot.Equals($realDevRoot, [StringComparison]::OrdinalIgnoreCase) -or $HarnessRoot.Equals($realProjectRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "HarnessRoot must not be the real DevRoot or Star Citizen project root: $HarnessRoot"
+    }
+    $DevRoot = $HarnessRoot
+}
+if ($HarnessMode -or $PlanOnly -or $SelfTest) {
+    $NoExternalActions = $true
+    $NoNetwork = $true
+    $NoGui = $true
+    $NoUserEnvWrites = $true
+    $NoGlobalGitConfig = $true
+}
+if ($NoExternalActions) {
+    $NoNetwork = $true
+    $NoGui = $true
+    $NoUserEnvWrites = $true
+    $NoGlobalGitConfig = $true
+}
+if ($PlanOnly -or $SelfTest) {
+    $AssumeYes = $true
+    $NoPause = $true
+}
+if ($NoExternalActions -and (-not $HarnessMode) -and (-not $SelfTest)) {
+    $PlanOnly = $true
+}
+if ($HarnessMode -and (-not $PlanOnly) -and (-not $SelfTest)) {
+    # HarnessMode is deliberately non-live. Without an explicit harness self-test,
+    # it falls back to plan emission so it cannot install, download, clone, or launch.
+    $PlanOnly = $true
+}
 
 if ($All) {
     $InstallTools = $true
@@ -806,6 +868,16 @@ $Script:CurrentStepName = "Initializing"
 $Script:CurrentCompletedBefore = 0
 $Script:HiddenDryRun = $false
 $Script:VisualPreviewMode = $false
+$Script:HarnessMode = [bool]$HarnessMode
+$Script:HarnessRoot = [string]$HarnessRoot
+$Script:NoExternalActions = [bool]$NoExternalActions
+$Script:NoNetwork = [bool]$NoNetwork
+$Script:NoGui = [bool]$NoGui
+$Script:NoUserEnvWrites = [bool]$NoUserEnvWrites
+$Script:NoGlobalGitConfig = [bool]$NoGlobalGitConfig
+$Script:PlanOnly = [bool]$PlanOnly
+$Script:EmitPlanJson = [string]$EmitPlanJson
+$Script:NoPause = [bool]$NoPause
 $Script:GuideUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets"
 $Script:CommandLogCounter = 0
 $Script:LiveDashboardEnabled = $true
@@ -860,6 +932,156 @@ function Write-SubStep {
     param([string]$Message)
     if ($Script:VisualPreviewMode) { return }
     Write-Host "--- $Message" -ForegroundColor DarkCyan
+}
+
+function Get-InstallerFullPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    try { return ([IO.Path]::GetFullPath($Path)).TrimEnd([char[]]@('\','/')) } catch { return ([string]$Path).TrimEnd([char[]]@('\','/')) }
+}
+
+function Test-InstallerPathUnderRoot {
+    param([string]$Path, [string]$Root)
+    $full = Get-InstallerFullPath -Path $Path
+    $base = Get-InstallerFullPath -Path $Root
+    if ([string]::IsNullOrWhiteSpace($full) -or [string]::IsNullOrWhiteSpace($base)) { return $false }
+    if ($full.Equals($base, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix = $base.TrimEnd([char[]]@('\','/')) + [IO.Path]::DirectorySeparatorChar
+    return $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-NonLiveInstallerMode {
+    return ($Script:HarnessMode -or $Script:PlanOnly -or $SelfTest -or $Script:NoExternalActions)
+}
+
+function Get-InstallerAllowedWriteRoots {
+    $roots = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($Script:HarnessRoot)) { [void]$roots.Add($Script:HarnessRoot) }
+    if (-not [string]::IsNullOrWhiteSpace($Script:AgentWorkRoot)) { [void]$roots.Add($Script:AgentWorkRoot) }
+    return @($roots.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
+}
+
+function Assert-HarnessPathAllowed {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$Purpose = "write"
+    )
+    if (-not (Test-NonLiveInstallerMode)) { return }
+    $full = Get-InstallerFullPath -Path $Path
+    foreach ($root in @(Get-InstallerAllowedWriteRoots)) {
+        if (Test-InstallerPathUnderRoot -Path $full -Root $root) { return }
+    }
+    $allowed = (Get-InstallerAllowedWriteRoots) -join "; "
+    throw "Harness safety blocked $Purpose outside allowed test roots. Path: $full Allowed roots: $allowed"
+}
+
+function Test-ExternalActionsAllowed {
+    return (-not $Script:NoExternalActions -and -not $Script:PlanOnly)
+}
+
+function Test-InstallerGitCommandAllowed {
+    param(
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = ""
+    )
+    if (-not (Test-NonLiveInstallerMode)) { return $true }
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        Assert-HarnessPathAllowed -Path $WorkingDirectory -Purpose "Git working directory"
+    }
+    $joined = (($Arguments | ForEach-Object { [string]$_ }) -join " ")
+    if ($joined -match '(?i)(^|\s)(clone|pull|push|fetch|rebase|clean|reset)(\s|$)') { return $false }
+    if ($joined -match '(?i)(^|\s)credential(\s|$)') { return $false }
+    if (($Arguments -contains "config") -and ($Arguments -contains "--global")) { return $false }
+    return $true
+}
+
+function Assert-InstallerExternalCommandAllowed {
+    param(
+        [Parameter(Mandatory=$true)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = ""
+    )
+    if (Test-ExternalActionsAllowed) { return }
+    $leaf = [IO.Path]::GetFileName($Exe)
+    if ($leaf -match '^(?i:git(\.exe)?)$' -and (Test-InstallerGitCommandAllowed -Arguments $Arguments -WorkingDirectory $WorkingDirectory)) { return }
+    throw "Non-live harness blocked external command: $(Format-CommandDisplay -Exe $Exe -Arguments $Arguments)"
+}
+
+function Invoke-InstallerExternalCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [switch]$IgnoreExitCode,
+        [string]$WorkingDirectory = ""
+    )
+    Assert-InstallerExternalCommandAllowed -Exe $Exe -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+    Run-Native -Exe $Exe -Arguments $Arguments -IgnoreExitCode:$IgnoreExitCode -WorkingDirectory $WorkingDirectory
+}
+
+function Invoke-InstallerGitCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string[]]$Arguments = @(),
+        [switch]$IgnoreExitCode
+    )
+    $allArgs = @("-C", $Path) + @($Arguments)
+    Assert-InstallerExternalCommandAllowed -Exe "git" -Arguments $allArgs -WorkingDirectory $Path
+    Run-Native -Exe "git" -Arguments $allArgs -IgnoreExitCode:$IgnoreExitCode -WorkingDirectory $Path
+}
+
+function Invoke-InstallerDownload {
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [string]$Method = ""
+    )
+    if ($Script:NoNetwork -or (Test-NonLiveInstallerMode)) { throw "Non-live harness blocked network request: $Uri" }
+    Assert-HarnessPathAllowed -Path $OutFile -Purpose "download output"
+    if ([string]::IsNullOrWhiteSpace($Method)) {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing
+    } else {
+        Invoke-WebRequest -Uri $Uri -Method $Method -OutFile $OutFile -UseBasicParsing
+    }
+}
+
+function New-InstallerDirectory {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    Assert-HarnessPathAllowed -Path $Path -Purpose "directory creation"
+    if ($DryRun) {
+        Write-Host "[dry-run] mkdir $Path"
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+}
+
+function Write-InstallerFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$Text
+    )
+    Assert-HarnessPathAllowed -Path $Path -Purpose "file write"
+    $parent = Split-Path $Path -Parent
+    if (-not [string]::IsNullOrWhiteSpace($parent)) { New-InstallerDirectory -Path $parent }
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($Path, $Text, $utf8)
+}
+
+function Set-InstallerUserEnvironmentVariable {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Value
+    )
+    if ($Script:NoUserEnvWrites) { throw "Non-live harness blocked user environment write: $Name" }
+    [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+}
+
+function Start-InstallerGuiProcess {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+    if ($Script:NoGui -or (Test-NonLiveInstallerMode)) { throw "Non-live harness blocked GUI launch: $FilePath" }
+    Start-Process -FilePath $FilePath -ArgumentList $ArgumentList | Out-Null
 }
 
 
@@ -1329,6 +1551,7 @@ function Save-SetupState {
 
     $writeState = {
         param($StateObject)
+        Assert-HarnessPathAllowed -Path $Script:SetupStatePath -Purpose "setup-state write"
         Ensure-Directory (Split-Path $Script:SetupStatePath -Parent)
         $json = [string]($StateObject | ConvertTo-Json -Depth 10)
         if ([string]::IsNullOrWhiteSpace($json)) { $json = "{}" }
@@ -1686,6 +1909,7 @@ function Copy-LargeFileWithProgress {
 function Get-BlenderLatestStableVersion {
     param([string]$Fallback = "5.1.0")
     if (-not [string]::IsNullOrWhiteSpace($BlenderVersion)) { return $BlenderVersion }
+    if ($Script:NoNetwork -or (Test-NonLiveInstallerMode)) { return $Fallback }
     try {
         $root = Invoke-WebRequest -Uri "https://download.blender.org/release/" -UseBasicParsing -ErrorAction Stop
         $folders = New-Object 'System.Collections.Generic.List[version]'
@@ -1712,6 +1936,12 @@ function Get-BlenderLatestStableVersion {
 function Get-BlenderInstallChoices {
     param([string]$Version)
     $choices = New-Object 'System.Collections.Generic.List[object]'
+    if (Test-NonLiveInstallerMode) {
+        $root = Join-Path $DevRoot "Blender Foundation"
+        [void]$choices.Add([pscustomobject]@{ Label=(Join-Path $root "Blender $Version"); Path=(Join-Path $root "Blender $Version"); Available=$true })
+        [void]$choices.Add([pscustomobject]@{ Label=(Join-Path $root "Blender $Version Portable"); Path=(Join-Path $root "Blender $Version Portable"); Available=$true })
+        return @($choices.ToArray())
+    }
     [void]$choices.Add([pscustomobject]@{ Label="C:\Blender Foundation\Blender $Version"; Path="C:\Blender Foundation\Blender $Version"; Available=$true })
     $dAvailable = Test-Path -LiteralPath "D:\"
     [void]$choices.Add([pscustomobject]@{ Label="D:\Blender Foundation\Blender $Version"; Path="D:\Blender Foundation\Blender $Version"; Available=$dAvailable })
@@ -2127,10 +2357,29 @@ function Confirm-InstalledDataP4kBuildLabel {
 }
 
 
+function Test-IsInstalledDataP4kCandidate {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $p = $Path.Trim().Trim('"') -replace '/', '\'
+    $patterns = @(
+        '^[A-Z]:\\Roberts Space Industries\\StarCitizen\\[^\\]+\\Data\.p4k$',
+        '^[A-Z]:\\Program Files\\Roberts Space Industries\\StarCitizen\\[^\\]+\\Data\.p4k$',
+        '^[A-Z]:\\Program Files \(x86\)\\Roberts Space Industries\\StarCitizen\\[^\\]+\\Data\.p4k$',
+        '^[A-Z]:\\Games\\Roberts Space Industries\\StarCitizen\\[^\\]+\\Data\.p4k$',
+        '^[A-Z]:\\RSI\\StarCitizen\\[^\\]+\\Data\.p4k$',
+        '^[A-Z]:\\StarCitizen\\[^\\]+\\Data\.p4k$'
+    )
+    foreach ($pattern in $patterns) {
+        if ($p -match ('(?i)' + $pattern)) { return $true }
+    }
+    return $false
+}
+
 function Find-InstalledDataP4kFiles {
     # Finds Data.p4k files that look like they belong to an installed Star Citizen build.
     # This intentionally does not return arbitrary loose Data.p4k files from random folders;
     # custom/raw P4K files are handled by option 2, and dev-root copies by option 3.
+    if (Test-NonLiveInstallerMode) { return @() }
     $found = New-Object 'System.Collections.Generic.List[string]'
     $seen = @{}
 
@@ -3414,6 +3663,8 @@ function Invoke-LoggedDownloadJob {
         [Parameter(Mandatory=$true)][string]$Uri,
         [Parameter(Mandatory=$true)][string]$OutFile
     )
+    if ($Script:NoNetwork -or (Test-NonLiveInstallerMode)) { throw "Non-live harness blocked download: $Uri" }
+    Assert-HarnessPathAllowed -Path $OutFile -Purpose "download output"
 
     $display = "Download $Uri -> $OutFile"
     $commandLog = Get-CommandLogPath -Exe "download"
@@ -3706,15 +3957,64 @@ function Show-SetupPlan {
     Write-Host ""
     Write-Host "Root: $DevRoot"
     Write-Host ("Release: {0}  |  Build: {1}  |  Star Citizen compatibility: {2}" -f $Script:ReleaseVersion, $Script:InternalBuildVersion, $Script:StarCitizenCompatibility)
-        Write-Host "Workspace: $WorkspacePath"
+    Write-Host "Workspace: $WorkspacePath"
     Write-Host "Banner style: author-selected ($(Resolve-ProgressBannerStyle))"
-    if ($Script:HiddenDryRun) { Write-Host "Mode: visual preview" -ForegroundColor Magenta }
+    if ($Script:HarnessMode) { Write-Host "Mode: safe non-live harness" -ForegroundColor Magenta }
+    elseif ($Script:PlanOnly) { Write-Host "Mode: plan only" -ForegroundColor Magenta }
+    elseif ($Script:HiddenDryRun) { Write-Host "Mode: visual preview" -ForegroundColor Magenta }
     elseif ($DryRun) { Write-Host "Mode: dry run" -ForegroundColor Yellow }
     if ($NoProgressHeader) { Write-Host "Progress header: disabled" } else { Write-Host "Progress header: enabled" }
 }
 
+function Get-SetupPlanSnapshot {
+    $stepList = New-Object 'System.Collections.Generic.List[object]'
+    for ($i = 0; $i -lt $Script:SetupSteps.Count; $i++) {
+        [void]$stepList.Add([ordered]@{
+            index = $i + 1
+            id = [string]$Script:SetupSteps[$i].Id
+            name = [string]$Script:SetupSteps[$i].Name
+        })
+    }
+    return [ordered]@{
+        generatedAt = (Get-Date).ToString('s')
+        releaseVersion = [string]$Script:ReleaseVersion
+        scriptVersion = [string]$Script:InternalBuildVersion
+        harnessMode = [bool]$Script:HarnessMode
+        planOnly = [bool]$Script:PlanOnly
+        safety = [ordered]@{
+            noExternalActions = [bool]$Script:NoExternalActions
+            noNetwork = [bool]$Script:NoNetwork
+            noGui = [bool]$Script:NoGui
+            noUserEnvWrites = [bool]$Script:NoUserEnvWrites
+            noGlobalGitConfig = [bool]$Script:NoGlobalGitConfig
+        }
+        paths = [ordered]@{
+            originalDevRoot = [string]$Script:OriginalDevRoot
+            devRoot = [string]$DevRoot
+            harnessRoot = [string]$Script:HarnessRoot
+            agentWorkRoot = [string]$Script:AgentWorkRoot
+            starCitizenRoot = [string]$StarCitizenRoot
+            scDataRoot = [string]$ScDataRoot
+            scWorkRoot = [string]$ScWorkRoot
+            workspacePath = [string]$WorkspacePath
+            setupStatePath = [string]$Script:SetupStatePath
+        }
+        steps = @($stepList.ToArray())
+    }
+}
+
+function Write-SetupPlanJson {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    Assert-HarnessPathAllowed -Path $Path -Purpose "plan JSON write"
+    $snapshot = Get-SetupPlanSnapshot
+    $json = [string]($snapshot | ConvertTo-Json -Depth 8)
+    Write-InstallerFile -Path $Path -Text $json
+    Write-Host "Plan JSON written: $Path" -ForegroundColor Green
+}
+
 function Confirm-SetupPlan {
-    if ($AssumeYes -or $DryRun -or $ListSteps) { return }
+    if ($AssumeYes -or $DryRun -or $ListSteps -or $Script:NoPause -or $Script:PlanOnly -or $Script:HarnessMode) { return }
     Write-Host ""
     Write-Host "Review the setup plan above. This can install tools and modify your user PATH/environment variables." -ForegroundColor Yellow
     $answer = Read-Host "Ready to launch? Type Y to launch or N to cancel"
@@ -3843,11 +4143,7 @@ function Test-IsAdmin {
 
 function Ensure-Directory {
     param([Parameter(Mandatory=$true)][string]$Path)
-    if ($DryRun) {
-        Write-Host "[dry-run] mkdir $Path"
-        return
-    }
-    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    New-InstallerDirectory -Path $Path
 }
 
 function Normalize-PathEntry {
@@ -3863,7 +4159,7 @@ function Set-UserEnv {
     )
     Write-Host "Setting user environment variable $Name=$Value"
     if (-not $DryRun) {
-        [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+        Set-InstallerUserEnvironmentVariable -Name $Name -Value $Value
         Set-Item -Path "Env:$Name" -Value $Value
     }
 }
@@ -3890,7 +4186,7 @@ function Add-UserPath {
         Write-Host "Adding to user PATH: $Path"
         if (-not $DryRun) {
             $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $Path } else { "$userPath;$Path" }
-            [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+            Set-InstallerUserEnvironmentVariable -Name "Path" -Value $newPath
         }
     } else {
         Write-Host "PATH already contains: $Path"
@@ -3929,8 +4225,9 @@ function Get-CommandLogPath {
     $root = $ScLogsRoot
     if ([string]::IsNullOrWhiteSpace($root)) { $root = $env:TEMP }
     if (-not (Test-Path -LiteralPath $root)) {
-        try { New-Item -ItemType Directory -Force -Path $root | Out-Null } catch { $root = $env:TEMP }
+        try { New-InstallerDirectory -Path $root } catch { $root = $env:TEMP }
     }
+    Assert-HarnessPathAllowed -Path $root -Purpose "command log root"
     return (Join-Path $root $name)
 }
 
@@ -4010,6 +4307,27 @@ function Run-Native {
     )
     $display = Format-CommandDisplay -Exe $Exe -Arguments $Arguments
     if ($DryRun) { Write-Host "[dry-run] $display" -ForegroundColor DarkGray; return }
+    Assert-InstallerExternalCommandAllowed -Exe $Exe -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+
+    $leaf = [IO.Path]::GetFileName($Exe)
+    if ((Test-NonLiveInstallerMode) -and $leaf -match '^(?i:git(\.exe)?)$') {
+        Write-Host "    harness git command: $display" -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { Push-Location -LiteralPath $WorkingDirectory }
+        try {
+            $commandOutput = @(& $Exe @Arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) { $exitCode = 0 }
+        } finally {
+            if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { Pop-Location }
+        }
+        foreach ($line in @($commandOutput)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$line)) { Write-Host ("      " + [string]$line) -ForegroundColor DarkGray }
+        }
+        if (($exitCode -ne 0) -and (-not $IgnoreExitCode)) {
+            throw "Command failed with exit code ${exitCode}: $display"
+        }
+        return
+    }
 
     if ($Interactive) {
         Write-Host "COMMAND:" -ForegroundColor Black -BackgroundColor DarkCyan
@@ -4049,6 +4367,7 @@ function Run-ProcessWait {
     )
     $display = Format-CommandDisplay -Exe $FilePath -Arguments $ArgumentList
     if ($DryRun) { Write-Host "[dry-run] $display" -ForegroundColor DarkGray; return }
+    Assert-InstallerExternalCommandAllowed -Exe $FilePath -Arguments $ArgumentList -WorkingDirectory $WorkingDirectory
 
     $commandLog = Get-CommandLogPath -Exe $FilePath
     $exitCode = Invoke-LoggedCommandJob -Exe $FilePath -Arguments $ArgumentList -Display $display -CommandLog $commandLog -ActivityNote $ActivityNote -WorkingDirectory $WorkingDirectory
@@ -4079,6 +4398,7 @@ function Download-File {
     Write-Host "Downloading:" -ForegroundColor Cyan
     Write-Host "    from: $Uri" -ForegroundColor Gray
     Write-Host "      to: $OutFile" -ForegroundColor Gray
+    if ($Script:NoNetwork -or (Test-NonLiveInstallerMode)) { throw "Non-live harness blocked download: $Uri" }
     if (-not $DryRun) {
         Ensure-Directory (Split-Path $OutFile -Parent)
         $oldProgress = $ProgressPreference
@@ -4535,6 +4855,7 @@ function Test-PythonSeriesInstalled {
 
 function Test-PythonInstallerUrl {
     param([Parameter(Mandatory=$true)][string]$Url)
+    if ($Script:NoNetwork -or (Test-NonLiveInstallerMode)) { return $false }
     try {
         $old = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'
@@ -4559,6 +4880,9 @@ function Resolve-PythonWindowsInstallerVersion {
     if ($RequestedVersion -match '^\d+\.\d+\.\d+$') { [void]$candidates.Add($RequestedVersion) }
 
     Write-Host "Resolving newest available Windows x64 Python installer for series $Series..." -ForegroundColor DarkCyan
+    if ($Script:NoNetwork -or (Test-NonLiveInstallerMode)) {
+        return ($candidates | Select-Object -First 1)
+    }
 
     try {
         $old = $ProgressPreference
@@ -5237,8 +5561,14 @@ function Set-RepoLocalGitIdentity {
         return
     }
 
-    try { $globalName = ((& git config --global --get user.name 2>$null) -join "").Trim() } catch { }
-    try { $globalEmail = ((& git config --global --get user.email 2>$null) -join "").Trim() } catch { }
+    $canReadGlobal = -not $Script:NoGlobalGitConfig
+    if (-not $canReadGlobal -and -not [string]::IsNullOrWhiteSpace($env:GIT_CONFIG_GLOBAL)) {
+        try { $canReadGlobal = (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:HarnessRoot) -or (Test-InstallerPathUnderRoot -Path $env:GIT_CONFIG_GLOBAL -Root $Script:AgentWorkRoot) } catch { $canReadGlobal = $false }
+    }
+    if ($canReadGlobal) {
+        try { $globalName = ((& git config --global --get user.name 2>$null) -join "").Trim() } catch { }
+        try { $globalEmail = ((& git config --global --get user.email 2>$null) -join "").Trim() } catch { }
+    }
 
     $copied = $false
     $fallback = $false
@@ -5311,6 +5641,7 @@ function Merge-GitignoreRules {
         Write-Host ("[dry-run] Would append {0} .gitignore rule(s) to {1}" -f $missing.Count, $gitignore) -ForegroundColor DarkCyan
         return $false
     }
+    Assert-HarnessPathAllowed -Path $gitignore -Purpose ".gitignore merge"
     if (Test-Path -LiteralPath $gitignore) {
         Add-Content -LiteralPath $gitignore -Value @($missing.ToArray()) -Encoding UTF8
     } else {
@@ -5632,6 +5963,7 @@ function Initialize-GitVersioning {
 }
 
 function Get-VSBuildToolsInstallPath {
+    if (Test-NonLiveInstallerMode) { return (Join-Path $DevRoot "vsbuildtools") }
     $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path -LiteralPath $vswhere) {
         try {
@@ -5650,6 +5982,7 @@ function Get-VSBuildToolsInstallPath {
 }
 
 function Get-VsDevShellPath {
+    if (Test-NonLiveInstallerMode) { return (Join-Path (Join-Path $DevRoot "vsbuildtools") "Common7\Tools\Launch-VsDevShell.ps1") }
     $installationPath = Get-VSBuildToolsInstallPath
     if (-not [string]::IsNullOrWhiteSpace($installationPath)) {
         $candidate = Join-Path $installationPath "Common7\Tools\Launch-VsDevShell.ps1"
@@ -5789,7 +6122,7 @@ function Write-VSCodeWorkspace {
     if ($DryRun) {
         Write-Host "[dry-run] Would write workspace: $WorkspacePath"
     } else {
-        Set-Content -Path $WorkspacePath -Value $workspaceJson -Encoding UTF8
+        Write-InstallerFile -Path $WorkspacePath -Text $workspaceJson
         Write-Host "Workspace written: $WorkspacePath"
     }
 }
@@ -6743,7 +7076,7 @@ log('Helper finished. import_succeeded={0} method={1}'.format(import_succeeded, 
         # don't have to escape them through a PowerShell -> Python string.
         $env:SC_AURORA_SCENE_JSON = $SceneJson
         $env:SC_AURORA_HELPER_LOG = $logPath
-        Start-Process -FilePath $blenderExe -ArgumentList @("--python", $pyPath) | Out-Null
+        Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @("--python", $pyPath)
     } catch {
         Write-Warning "Could not launch Blender automatically: $($_.Exception.Message)"
         Write-Host "Open Blender manually and import:" -ForegroundColor Cyan
@@ -7047,21 +7380,157 @@ function Show-StepTimingSummary {
 
 
 function Invoke-SelfTest {
-    Write-Host ("Running release {0} / build {1} self-tests (no install actions)." -f $Script:ReleaseVersion, $Script:InternalBuildVersion) -ForegroundColor Cyan
+    Write-Host ("Running release {0} / build {1} safe non-live harness self-tests." -f $Script:ReleaseVersion, $Script:InternalBuildVersion) -ForegroundColor Cyan
     $errors = New-Object 'System.Collections.Generic.List[string]'
-    try { [void](Get-CommandText -Exe "git" -Arguments @("-C", "C:\dev\starcitizen\StarBreaker", "status")) } catch { [void]$errors.Add("Command formatter failed: $($_.Exception.Message)") }
+
+    function Add-SelfTestError([string]$Message) {
+        if (-not [string]::IsNullOrWhiteSpace($Message)) { [void]$errors.Add($Message) }
+    }
+    function Assert-SelfTest([bool]$Condition, [string]$Message) {
+        if (-not $Condition) { Add-SelfTestError $Message }
+    }
+    function Get-LocalGitConfigValue([string]$RepoPath, [string]$Name) {
+        try { return ((& git -C $RepoPath config --local --get $Name 2>$null) -join "").Trim() } catch { return "" }
+    }
+    function New-HarnessGitRepo([string]$Name) {
+        $repo = Join-Path (Join-Path $Script:HarnessRoot "git-tests") $Name
+        Ensure-Directory $repo
+        Run-Native -Exe "git" -Arguments @("-C", $repo, "init", "-b", "main") -WorkingDirectory $repo
+        return $repo
+    }
+
     try {
         $check = [pscustomobject]@{ SourceSize=[int64]150GB; Buffer=[int64][Math]::Max([double]10GB, [double]150GB*0.05) }
         if ($check.Buffer -lt [int64]10GB) { [void]$errors.Add("P4K buffer math failed.") }
     } catch { [void]$errors.Add("P4K math failed: $($_.Exception.Message)") }
-    try { $choices = @(Get-BlenderInstallChoices -Version "5.1"); if ($choices.Count -lt 2) { [void]$errors.Add("Blender install path builder failed.") } } catch { [void]$errors.Add("Blender path selftest failed: $($_.Exception.Message)") }
+
+    try {
+        Ensure-Directory $Script:HarnessRoot
+        Assert-SelfTest (Test-InstallerPathUnderRoot -Path $DevRoot -Root $Script:HarnessRoot) "Harness DevRoot is not under HarnessRoot."
+        $blocked = $false
+        try { Assert-HarnessPathAllowed -Path (Join-Path $Script:OriginalDevRoot "harness-escape-check.txt") -Purpose "escape self-test" } catch { $blocked = $true }
+        Assert-SelfTest $blocked "Harness path escape check did not block a write outside the allowed test roots."
+    } catch { Add-SelfTestError "Harness path safety self-test failed: $($_.Exception.Message)" }
+
+    try {
+        Initialize-SetupPlan
+        $ids = @($Script:SetupSteps | ForEach-Object { [string]$_.Id })
+        $gitIndex = [Array]::IndexOf($ids, "setup-git-versioning")
+        Assert-SelfTest ($gitIndex -ge 0) "setup-git-versioning was missing from the setup plan."
+        foreach ($later in @("write-workspace","vscode-extensions","build-starbreaker","locate-blender","install-blender-addon","select-data-p4k","verify-sc-build","p4k-explore","aurora-example")) {
+            $idx = [Array]::IndexOf($ids, $later)
+            if ($idx -ge 0) { Assert-SelfTest ($gitIndex -ge 0 -and $gitIndex -lt $idx) "setup-git-versioning did not appear before $later." }
+        }
+    } catch { Add-SelfTestError "Setup plan ordering self-test failed: $($_.Exception.Message)" }
+
+    try {
+        $cases = @(
+            "C:\Program Files\Roberts Space Industries\StarCitizen\LIVE\Data.p4k",
+            "D:\StarCitizen\LIVE\Data.p4k",
+            "D:\RSI\StarCitizen\LIVE\Data.p4k",
+            "E:\Games\Roberts Space Industries\StarCitizen\PTU\Data.p4k"
+        )
+        foreach ($case in $cases) { Assert-SelfTest (Test-IsInstalledDataP4kCandidate -Path $case) "Installed Data.p4k string did not classify as installed source: $case" }
+        Assert-SelfTest (-not (Test-IsInstalledDataP4kCandidate -Path "D:\dev\starcitizen\work\Data.p4k")) "Loose Data.p4k string incorrectly classified as installed source."
+    } catch { Add-SelfTestError "Data.p4k string classification self-test failed: $($_.Exception.Message)" }
+
+    $oldGlobal = $env:GIT_CONFIG_GLOBAL
+    $oldNoSystem = $env:GIT_CONFIG_NOSYSTEM
+    $oldHome = $env:HOME
+    $oldXdgConfig = $env:XDG_CONFIG_HOME
+    try {
+        $git = Get-Command git -ErrorAction SilentlyContinue
+        if ($null -eq $git) { throw "git was not found; cannot validate Git helper behavior." }
+        $gitHome = Join-Path $Script:HarnessRoot "git-home"
+        $gitConfigHome = Join-Path $Script:HarnessRoot "git-xdg"
+        Ensure-Directory $gitHome
+        Ensure-Directory $gitConfigHome
+        $globalConfig = Join-Path $Script:HarnessRoot "git-tests\empty-global.gitconfig"
+        Write-InstallerFile -Path $globalConfig -Text "# harness global Git config placeholder`r`n"
+        $env:GIT_CONFIG_GLOBAL = $globalConfig
+        $env:GIT_CONFIG_NOSYSTEM = "1"
+        $env:HOME = $gitHome
+        $env:XDG_CONFIG_HOME = $gitConfigHome
+        $globalBefore = [IO.File]::ReadAllText($globalConfig)
+
+        $localRepo = New-HarnessGitRepo "identity-present"
+        Run-Native -Exe "git" -Arguments @("-C", $localRepo, "config", "--local", "user.name", "Existing User") -WorkingDirectory $localRepo
+        Run-Native -Exe "git" -Arguments @("-C", $localRepo, "config", "--local", "user.email", "existing@example.invalid") -WorkingDirectory $localRepo
+        $localResult = New-GitVersioningResult -Repo "identity-present" -Role "harness" -Path $localRepo -Branch "dev-test"
+        Set-RepoLocalGitIdentity -Path $localRepo -Result $localResult
+        Assert-SelfTest ((Get-LocalGitConfigValue $localRepo "user.name") -eq "Existing User") "Repo-local user.name was not preserved."
+        Assert-SelfTest ((Get-LocalGitConfigValue $localRepo "user.email") -eq "existing@example.invalid") "Repo-local user.email was not preserved."
+        Assert-SelfTest ([bool]$localResult.IdentityLocalPresent) "Repo-local identity was not reported as already present."
+
+        $fallbackRepo = New-HarnessGitRepo "identity-fallback"
+        $fallbackResult = New-GitVersioningResult -Repo "identity-fallback" -Role "harness" -Path $fallbackRepo -Branch "dev-test"
+        Set-RepoLocalGitIdentity -Path $fallbackRepo -Result $fallbackResult
+        Assert-SelfTest ((Get-LocalGitConfigValue $fallbackRepo "user.name") -eq "Local Developer") "Fallback user.name was not written correctly."
+        Assert-SelfTest ((Get-LocalGitConfigValue $fallbackRepo "user.email") -eq "local@example.invalid") "Fallback user.email was not written correctly."
+        Assert-SelfTest ([bool]$fallbackResult.IdentityFallbackWritten) "Fallback identity was not reported as written."
+        $globalAfter = [IO.File]::ReadAllText($globalConfig)
+        Assert-SelfTest ($globalBefore -eq $globalAfter) "Harness Git helper modified the configured global Git config file."
+
+        $dirtyRepo = New-HarnessGitRepo "dirty-branch"
+        Write-InstallerFile -Path (Join-Path $dirtyRepo "dirty.txt") -Text "dirty"
+        $beforeBranch = Get-GitCurrentBranchSafe -Path $dirtyRepo
+        Ensure-GitBranch -RepoName "dirty-branch" -Path $dirtyRepo -Branch "dev-target" -Role "harness" -SwitchBranch
+        $dirtyState = $Script:BranchStates[$Script:BranchStates.Count - 1]
+        Assert-SelfTest ([string]$dirtyState.Status -eq "WARN") "Dirty repo did not produce WARN."
+        Assert-SelfTest ((Get-GitCurrentBranchSafe -Path $dirtyRepo) -eq $beforeBranch) "Dirty repo branch was switched."
+
+        Ensure-GitBranch -RepoName "missing-repo" -Path (Join-Path $Script:HarnessRoot "git-tests\missing") -Branch "dev-target" -Role "harness" -SwitchBranch
+        $missingState = $Script:BranchStates[$Script:BranchStates.Count - 1]
+        Assert-SelfTest ([string]$missingState.Status -ne "OK") "Missing repo was reported as OK."
+
+        foreach ($repo in @($localRepo, $fallbackRepo, $dirtyRepo)) {
+            $countText = ((& git -C $repo rev-list --count --all 2>$null) -join "").Trim()
+            if ([string]::IsNullOrWhiteSpace($countText)) { $countText = "0" }
+            Assert-SelfTest ([int]$countText -eq 0) "Harness Git repo has commits unexpectedly: $repo"
+        }
+    } catch { Add-SelfTestError "Git helper harness self-test failed: $($_.Exception.Message)" }
+    finally {
+        $env:GIT_CONFIG_GLOBAL = $oldGlobal
+        $env:GIT_CONFIG_NOSYSTEM = $oldNoSystem
+        $env:HOME = $oldHome
+        $env:XDG_CONFIG_HOME = $oldXdgConfig
+    }
+
+    try {
+        $choices = @(Get-BlenderInstallChoices -Version "5.1")
+        if ($choices.Count -lt 2) { [void]$errors.Add("Blender install path builder failed.") }
+        foreach ($choice in $choices) { Assert-SelfTest (Test-InstallerPathUnderRoot -Path ([string]$choice.Path) -Root $Script:HarnessRoot) "Blender harness choice escaped HarnessRoot: $($choice.Path)" }
+    } catch { [void]$errors.Add("Blender path selftest failed: $($_.Exception.Message)") }
+
+    try {
+        Write-VSCodeWorkspace
+        Assert-SelfTest (Test-Path -LiteralPath $WorkspacePath) "Harness workspace file was not written."
+        $workspace = Get-Content -LiteralPath $WorkspacePath -Raw | ConvertFrom-Json
+        $expectedStarRoot = To-ForwardSlashPath $StarCitizenRoot
+        foreach ($folder in @($workspace.folders)) {
+            $path = [string]$folder.path
+            if ([string]$folder.name -eq "scdata") {
+                Assert-SelfTest ($path.StartsWith((To-ForwardSlashPath $ScDataRoot), [StringComparison]::OrdinalIgnoreCase)) "Workspace scdata folder did not use harness ScDataRoot."
+            } else {
+                Assert-SelfTest ($path.StartsWith($expectedStarRoot, [StringComparison]::OrdinalIgnoreCase)) "Workspace folder escaped harness StarCitizenRoot: $path"
+            }
+        }
+    } catch { Add-SelfTestError "Workspace generation self-test failed: $($_.Exception.Message)" }
+
+    try {
+        Save-SetupState
+        Assert-SelfTest (Test-Path -LiteralPath $Script:SetupStatePath) "Harness setup-state file was not written."
+        Assert-SelfTest (Test-InstallerPathUnderRoot -Path $Script:SetupStatePath -Root $Script:HarnessRoot) "Harness setup-state path escaped HarnessRoot."
+    } catch { Add-SelfTestError "Setup-state harness self-test failed: $($_.Exception.Message)" }
+
     try { [void]((@([ordered]@{version=$Script:ReleaseVersion; scriptVersion=$Script:InternalBuildVersion; starCitizenCompatibility=$Script:StarCitizenCompatibility; devRoot=$DevRoot} | ConvertTo-Json -Depth 4) -join [Environment]::NewLine)) } catch { [void]$errors.Add("setup-state serialization selftest threw: $($_.Exception.Message)") }
     if ($errors.Count -gt 0) {
         Write-Host "Self-test found issues:" -ForegroundColor Red
         foreach ($e in $errors) { Write-Host "  - $e" -ForegroundColor Red }
         exit 1
     }
-    Write-Host "Self-test passed." -ForegroundColor Green
+    Write-Host "Safe non-live harness self-test passed." -ForegroundColor Green
+    Write-Host "Harness root: $Script:HarnessRoot" -ForegroundColor DarkCyan
     exit 0
 }
 
@@ -7493,6 +7962,13 @@ if ($SelfTest) { Invoke-SelfTest }
 Initialize-SetupPlan
 if ($ListSteps) {
     Show-SetupPlan
+    if (-not [string]::IsNullOrWhiteSpace($EmitPlanJson)) { Write-SetupPlanJson -Path $EmitPlanJson }
+    return
+}
+if ($Script:PlanOnly) {
+    Show-SetupPlan
+    if (-not [string]::IsNullOrWhiteSpace($EmitPlanJson)) { Write-SetupPlanJson -Path $EmitPlanJson }
+    Write-Host "PlanOnly completed. No setup actions were executed." -ForegroundColor Green
     return
 }
 if (-not $Script:VisualPreviewMode) {
