@@ -1400,6 +1400,18 @@ function Add-SetupFailureRecord {
         [switch]$Fatal
     )
     if ([string]::IsNullOrWhiteSpace($Reason)) { $Reason = "Unknown failure." }
+    $existingFailures = @()
+    try { $existingFailures = @($Script:SetupFailures.ToArray()) } catch { $existingFailures = @() }
+    foreach ($existing in $existingFailures) {
+        try {
+            if (([string]$existing.Id -ieq $Id) -and
+                ([string]$existing.Reason -ieq $Reason) -and
+                ([bool]$existing.Fatal -eq [bool]$Fatal)) {
+                if ($Fatal) { $Script:FatalFailure = $true }
+                return
+            }
+        } catch { }
+    }
     $Script:SetupFailures.Add([pscustomobject]@{
         Id = $Id; Name = $Name; Reason = $Reason; LogPath = $LogPath; Fatal = [bool]$Fatal; Time = (Get-Date).ToString('s')
     }) | Out-Null
@@ -1409,6 +1421,16 @@ function Add-SetupFailureRecord {
 function Add-SetupSkipRecord {
     param([string]$Id, [string]$Name, [string]$Reason)
     if ([string]::IsNullOrWhiteSpace($Reason)) { $Reason = "Skipped." }
+    $existingSkips = @()
+    try { $existingSkips = @($Script:SetupSkips.ToArray()) } catch { $existingSkips = @() }
+    foreach ($existing in $existingSkips) {
+        try {
+            if (([string]$existing.Id -ieq $Id) -and
+                ([string]$existing.Reason -ieq $Reason)) {
+                return
+            }
+        } catch { }
+    }
     $Script:SetupSkips.Add([pscustomobject]@{
         Id = $Id; Name = $Name; Reason = $Reason; Time = (Get-Date).ToString('s')
     }) | Out-Null
@@ -1472,11 +1494,20 @@ function Get-SimpleObjectFromProperties {
     return $out
 }
 
+function Get-ListSnapshot {
+    param($List)
+    if ($null -eq $List) { return @() }
+    try {
+        if ($List.PSObject.Methods.Name -contains "ToArray") { return @($List.ToArray()) }
+    } catch { }
+    try { return @($List | ForEach-Object { $_ }) } catch { return @() }
+}
+
 function Get-StepTimingPlainList {
     param([string[]]$Statuses = @())
     $list = New-Object 'System.Collections.Generic.List[object]'
     try {
-        foreach ($r in @($Script:StepTimings)) {
+        foreach ($r in (Get-ListSnapshot $Script:StepTimings)) {
             if ($null -eq $r) { continue }
             $status = [string]$r.Status
             if ($Statuses.Count -gt 0 -and -not ($Statuses -contains $status)) { continue }
@@ -1496,20 +1527,20 @@ function Get-StepTimingPlainList {
 
 function Get-SkipPlainList {
     $list = New-Object 'System.Collections.Generic.List[object]'
-    try { foreach ($r in @($Script:SetupSkips)) { [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @('Id','Name','Reason','Time'))) } } catch { }
+    try { foreach ($r in (Get-ListSnapshot $Script:SetupSkips)) { [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @('Id','Name','Reason','Time'))) } } catch { }
     return @($list.ToArray())
 }
 
 function Get-FailurePlainList {
     $list = New-Object 'System.Collections.Generic.List[object]'
-    try { foreach ($r in @($Script:SetupFailures)) { [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @('Id','Name','Reason','LogPath','Fatal','Time'))) } } catch { }
+    try { foreach ($r in (Get-ListSnapshot $Script:SetupFailures)) { [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @('Id','Name','Reason','LogPath','Fatal','Time'))) } } catch { }
     return @($list.ToArray())
 }
 
 function Get-BranchPlainList {
     $list = New-Object 'System.Collections.Generic.List[object]'
     try {
-        foreach ($r in @($Script:BranchStates)) {
+        foreach ($r in (Get-ListSnapshot $Script:BranchStates)) {
             [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @(
                 'Repo','Role','Path','GitExists','Branch','CurrentBranch','Dirty','DirtyStatus',
                 'IdentityStatus','IdentityLocalPresent','IdentityCopiedFromGlobal','IdentityFallbackWritten',
@@ -1596,19 +1627,19 @@ function Save-SetupState {
 
     try {
         $stepList = New-Object 'System.Collections.Generic.List[object]'
-        foreach ($r in @($Script:StepTimings)) {
+        foreach ($r in (Get-ListSnapshot $Script:StepTimings)) {
             if ($null -eq $r) { continue }
             [void]$stepList.Add((New-PlainStepRecord $r))
         }
 
         $skipList = New-Object 'System.Collections.Generic.List[object]'
-        foreach ($r in @($Script:SetupSkips)) {
+        foreach ($r in (Get-ListSnapshot $Script:SetupSkips)) {
             if ($null -eq $r) { continue }
             [void]$skipList.Add([ordered]@{ id=[string]$r.Id; name=[string]$r.Name; reason=[string]$r.Reason; time=[string]$r.Time })
         }
 
         $failList = New-Object 'System.Collections.Generic.List[object]'
-        foreach ($r in @($Script:SetupFailures)) {
+        foreach ($r in (Get-ListSnapshot $Script:SetupFailures)) {
             if ($null -eq $r) { continue }
             $fatal = $false
             try { $fatal = [bool]$r.Fatal } catch { $fatal = $false }
@@ -1616,7 +1647,7 @@ function Save-SetupState {
         }
 
         $branchList = New-Object 'System.Collections.Generic.List[object]'
-        foreach ($r in @($Script:BranchStates)) {
+        foreach ($r in (Get-ListSnapshot $Script:BranchStates)) {
             if ($null -eq $r) { continue }
             $gitExists = $false; $dirty = $false; $identityLocal = $false; $identityCopied = $false; $identityFallback = $false
             try { $gitExists = [bool]$r.GitExists } catch { }
@@ -1657,7 +1688,7 @@ function Save-SetupState {
         } catch { }
 
         $completedList = New-Object 'System.Collections.Generic.List[object]'
-        foreach ($r in @($Script:StepTimings)) {
+        foreach ($r in (Get-ListSnapshot $Script:StepTimings)) {
             if ($null -eq $r) { continue }
             $statusValue = ""
             try { $statusValue = [string]$r.Status } catch { $statusValue = "" }
@@ -3915,21 +3946,24 @@ function Invoke-SetupStep {
         return
     }
 
+    $failureMessageShown = $false
     try {
         & $ScriptBlock
         $elapsed = (Get-Date) - $stepStart
         $completedAfter = if ($stepNumber -gt 0) { $stepNumber } else { $completedBefore }
-        if ($Script:CurrentStepResultStatus -eq "SKIPPED") {
+        $softStatus = ([string]$Script:CurrentStepResultStatus).Trim().ToUpperInvariant()
+        if ($softStatus -eq "SKIPPED") {
             $reason = if ([string]::IsNullOrWhiteSpace($Script:CurrentStepResultReason)) { "Skipped." } else { $Script:CurrentStepResultReason }
             Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "SKIPPED"
             Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status "SKIPPED"
             $Script:StepTimings.Add([pscustomobject]@{
                 Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = "SKIPPED"; Reason = $reason
             }) | Out-Null
+            Add-SetupSkipRecord -Id $Id -Name $Name -Reason $reason
             Save-SetupState
             return
         }
-        if ($Script:CurrentStepResultStatus -eq "WARN") {
+        if ($softStatus -eq "WARN") {
             $reason = if ([string]::IsNullOrWhiteSpace($Script:CurrentStepResultReason)) { "Completed with warnings." } else { $Script:CurrentStepResultReason }
             Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "WARN"
             Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status "WARN"
@@ -3940,16 +3974,21 @@ function Invoke-SetupStep {
             Save-SetupState
             return
         }
-        if ($Script:CurrentStepResultStatus -in @("FAIL", "FAILED", "FATAL")) {
+        if ($softStatus -in @("FAIL", "FAILED", "FATAL")) {
             $reason = if ([string]::IsNullOrWhiteSpace($Script:CurrentStepResultReason)) { "Step reported failure." } else { $Script:CurrentStepResultReason }
-            $statusText = if ($Script:CurrentStepResultStatus -eq "FATAL" -or $Fatal) { "FATAL" } else { "FAILED" }
+            $statusText = if ($softStatus -eq "FATAL" -or $Fatal) { "FATAL" } else { "FAILED" }
             $Script:StepTimings.Add([pscustomobject]@{
                 Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = $statusText; Reason = $reason
             }) | Out-Null
             Add-SetupFailureRecord -Id $Id -Name $Name -Reason $reason -LogPath $Script:LastCommandLogPath -Fatal:($statusText -eq "FATAL")
             Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "FAILED"
             Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status $statusText
-            Write-Host "Step failed, but setup will continue where possible." -ForegroundColor Yellow
+            if ($statusText -eq "FATAL") {
+                Write-Host "Fatal setup step failed; setup will stop after saving state and logs." -ForegroundColor Red
+            } else {
+                Write-Host "Step failed, but setup will continue where possible." -ForegroundColor Yellow
+            }
+            $failureMessageShown = $true
             Write-Host ("Reason: {0}" -f $reason) -ForegroundColor Red
             Save-SetupState
             if ($statusText -eq "FATAL") { throw $reason }
@@ -3969,24 +4008,42 @@ function Invoke-SetupStep {
         $elapsed = (Get-Date) - $stepStart
         $reason = $_.Exception.Message
         $completedAfter = if ($stepNumber -gt 0) { $stepNumber } else { $completedBefore }
-        $statusText = if ($Fatal) { "FATAL" } else { "FAILED" }
-        $Script:StepTimings.Add([pscustomobject]@{
-            Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = $statusText; Reason = $reason
-        }) | Out-Null
-        Add-SetupFailureRecord -Id $Id -Name $Name -Reason $reason -LogPath $Script:LastCommandLogPath -Fatal:$Fatal
+        $caughtSoftStatus = ([string]$Script:CurrentStepResultStatus).Trim().ToUpperInvariant()
+        $statusText = if ($Fatal -or $caughtSoftStatus -eq "FATAL") { "FATAL" } else { "FAILED" }
+        $alreadyRecorded = $false
+        try {
+            $latest = @($Script:StepTimings | Where-Object { [string]$_.Id -eq $Id } | Select-Object -Last 1)
+            if ($latest.Count -gt 0) {
+                $alreadyRecorded = (([string]$latest[0].Status -eq $statusText) -and ([string]$latest[0].Reason -eq $reason))
+            }
+        } catch { $alreadyRecorded = $false }
+        if (-not $alreadyRecorded) {
+            $Script:StepTimings.Add([pscustomobject]@{
+                Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = $statusText; Reason = $reason
+            }) | Out-Null
+        }
+        Add-SetupFailureRecord -Id $Id -Name $Name -Reason $reason -LogPath $Script:LastCommandLogPath -Fatal:($statusText -eq "FATAL")
         if ($elapsed.TotalSeconds -ge $Script:LongStepThresholdSeconds) {
             try { [System.Media.SystemSounds]::Hand.Play() } catch { }
         }
-        Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "FAILED"
-        Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status $statusText
-        Write-Host "Step failed, but setup will continue where possible." -ForegroundColor Yellow
-        Write-Host ("Reason: {0}" -f $reason) -ForegroundColor Red
-        if (-not [string]::IsNullOrWhiteSpace($Script:LastCommandLogPath)) {
-            Write-Host ("Last command log: {0}" -f $Script:LastCommandLogPath) -ForegroundColor DarkYellow
+        if (-not $alreadyRecorded) {
+            Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "FAILED"
+            Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status $statusText
+        }
+        if (-not $failureMessageShown) {
+            if ($statusText -eq "FATAL") {
+                Write-Host "Fatal setup step failed; setup will stop after saving state and logs." -ForegroundColor Red
+            } else {
+                Write-Host "Step failed, but setup will continue where possible." -ForegroundColor Yellow
+            }
+            Write-Host ("Reason: {0}" -f $reason) -ForegroundColor Red
+            if (-not [string]::IsNullOrWhiteSpace($Script:LastCommandLogPath)) {
+                Write-Host ("Last command log: {0}" -f $Script:LastCommandLogPath) -ForegroundColor DarkYellow
+            }
         }
         Save-SetupState
         Start-Sleep -Milliseconds 750
-        if ($Fatal) { throw }
+        if ($statusText -eq "FATAL") { throw }
         return
     }
 }
@@ -7383,14 +7440,14 @@ function Show-SetupOutcomeSummary {
 
     $failures = New-Object 'System.Collections.Generic.List[object]'
     $skips = New-Object 'System.Collections.Generic.List[object]'
-    try { foreach ($f in @($Script:SetupFailures)) { if ($null -ne $f) { [void]$failures.Add($f) } } } catch { }
-    try { foreach ($s in @($Script:SetupSkips)) { if ($null -ne $s) { [void]$skips.Add($s) } } } catch { }
+    try { foreach ($f in (Get-ListSnapshot $Script:SetupFailures)) { if ($null -ne $f) { [void]$failures.Add($f) } } } catch { }
+    try { foreach ($s in (Get-ListSnapshot $Script:SetupSkips)) { if ($null -ne $s) { [void]$skips.Add($s) } } } catch { }
 
     # Some steps mark themselves failed through StepTimings without adding a
     # failure record. Include those so the final banner never says success when
     # the dashboard shows a failed step.
     try {
-        foreach ($r in @($Script:StepTimings)) {
+        foreach ($r in (Get-ListSnapshot $Script:StepTimings)) {
             if ($null -eq $r) { continue }
             $status = [string]$r.Status
             if ($status -match '^(FAIL|FAILED|FATAL)$') {
@@ -7454,7 +7511,7 @@ function Show-SetupOutcomeSummary {
 
     if ($Script:BranchStates.Count -gt 0) {
         Write-Host "GIT VERSIONING STATUS:" -ForegroundColor Cyan
-        foreach ($b in @($Script:BranchStates)) {
+        foreach ($b in (Get-ListSnapshot $Script:BranchStates)) {
             $color = switch ([string]$b.Status) {
                 "OK" { "Green" }
                 "WARN" { "Yellow" }
@@ -7709,6 +7766,144 @@ function Invoke-SelfTest {
         Ensure-Directory $repo
         Run-Native -Exe "git" -Arguments @("-C", $repo, "init", "-b", "main") -WorkingDirectory $repo
         return $repo
+    }
+    function Get-SelfTestTimingCount([string]$Id, [string]$Status = "") {
+        $matches = @($Script:StepTimings | Where-Object {
+            ([string]$_.Id -eq $Id) -and ([string]::IsNullOrWhiteSpace($Status) -or [string]$_.Status -eq $Status)
+        })
+        return [int]$matches.Count
+    }
+    function Get-SelfTestSkipCount([string]$Id, [string]$Reason) {
+        $matches = @($Script:SetupSkips | Where-Object { ([string]$_.Id -eq $Id) -and ([string]$_.Reason -eq $Reason) })
+        return [int]$matches.Count
+    }
+    function Get-SelfTestFailureCount([string]$Id, [string]$Reason, [bool]$Fatal) {
+        $matches = @($Script:SetupFailures | Where-Object { ([string]$_.Id -eq $Id) -and ([string]$_.Reason -eq $Reason) -and ([bool]$_.Fatal -eq $Fatal) })
+        return [int]$matches.Count
+    }
+
+    try {
+        $oldSteps = $Script:SetupSteps
+        $oldLookup = $Script:SetupStepLookup
+        $oldTimings = $Script:StepTimings
+        $oldSkips = $Script:SetupSkips
+        $oldFailures = $Script:SetupFailures
+        $oldFatal = $Script:FatalFailure
+        $oldSetupStatePath = $Script:SetupStatePath
+        $oldCurrentStepId = $Script:CurrentStepId
+        $oldCurrentStepName = $Script:CurrentStepName
+        $oldCurrentStepNumber = $Script:CurrentStepNumber
+        $oldCurrentCompletedBefore = $Script:CurrentCompletedBefore
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:FatalFailure = $false
+        $Script:SetupStatePath = Join-Path $Script:HarnessRoot "status-tests\setup-state.json"
+        $Script:SetupSteps = @(
+            (New-SetupStepObject -Id "step-ok" -Name "Synthetic OK step"),
+            (New-SetupStepObject -Id "step-soft-skip" -Name "Synthetic soft skip step"),
+            (New-SetupStepObject -Id "setup-git-versioning" -Name "Synthetic dependency source"),
+            (New-SetupStepObject -Id "locate-blender" -Name "Synthetic dependent step"),
+            (New-SetupStepObject -Id "step-soft-failed" -Name "Synthetic soft failed step"),
+            (New-SetupStepObject -Id "step-soft-fatal" -Name "Synthetic soft fatal step"),
+            (New-SetupStepObject -Id "step-thrown-failed" -Name "Synthetic thrown failed step"),
+            (New-SetupStepObject -Id "step-thrown-fatal" -Name "Synthetic thrown fatal step")
+        )
+        $Script:SetupStepLookup = @{}
+        for ($i = 0; $i -lt $Script:SetupSteps.Count; $i++) { $Script:SetupStepLookup[$Script:SetupSteps[$i].Id] = ($i + 1) }
+
+        Invoke-SetupStep -Id "step-ok" -Name "Synthetic OK step" -ScriptBlock { }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-ok" -Status "OK") -eq 1) "OK step was not recorded as OK exactly once."
+        Assert-SelfTest (Test-Path -LiteralPath $Script:SetupStatePath) "Setup-state was not saved after OK step."
+
+        Invoke-SetupStep -Id "step-soft-skip" -Name "Synthetic soft skip step" -ScriptBlock {
+            Add-SetupSkipRecord -Id "step-soft-skip" -Name "Synthetic soft skip step" -Reason "soft skip reason"
+            $Script:CurrentStepResultStatus = "SKIPPED"
+            $Script:CurrentStepResultReason = "soft skip reason"
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-soft-skip" -Status "SKIPPED") -eq 1) "Soft SKIPPED was not recorded as SKIPPED exactly once."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-soft-skip" -Status "OK") -eq 0) "Soft SKIPPED was incorrectly recorded as OK."
+        Assert-SelfTest ((Get-SelfTestSkipCount -Id "step-soft-skip" -Reason "soft skip reason") -eq 1) "Soft SKIPPED did not produce exactly one skip record."
+        Assert-SelfTest (Test-SetupStepFailedOrSkipped -Id "step-soft-skip") "Soft SKIPPED did not block dependencies."
+
+        Invoke-SetupStep -Id "setup-git-versioning" -Name "Synthetic warning source" -ScriptBlock {
+            $Script:CurrentStepResultStatus = "WARN"
+            $Script:CurrentStepResultReason = "warning reason"
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "setup-git-versioning" -Status "WARN") -eq 1) "WARN was not recorded exactly once."
+        Assert-SelfTest (-not (Test-SetupStepFailedOrSkipped -Id "setup-git-versioning")) "WARN incorrectly blocked dependencies."
+        Assert-SelfTest ([string]::IsNullOrWhiteSpace((Get-StepDependencySkipReason -Id "locate-blender"))) "WARN dependency source produced a skip reason."
+        Invoke-SetupStep -Id "locate-blender" -Name "Synthetic dependent after warning" -ScriptBlock { }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "locate-blender" -Status "OK") -eq 1) "Dependent step did not run after WARN source."
+
+        Invoke-SetupStep -Id "step-soft-failed" -Name "Synthetic soft failed step" -ScriptBlock {
+            Add-SetupFailureRecord -Id "step-soft-failed" -Name "Synthetic soft failed step" -Reason "soft fail reason"
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = "soft fail reason"
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-soft-failed" -Status "FAILED") -eq 1) "Soft FAILED was not recorded as FAILED exactly once."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-soft-failed" -Status "OK") -eq 0) "Soft FAILED was incorrectly recorded as OK."
+        Assert-SelfTest ((Get-SelfTestFailureCount -Id "step-soft-failed" -Reason "soft fail reason" -Fatal $false) -eq 1) "Soft FAILED did not produce exactly one nonfatal failure record."
+        Assert-SelfTest (Test-SetupStepFailedOrSkipped -Id "step-soft-failed") "Soft FAILED did not block dependencies."
+
+        Invoke-SetupStep -Id "setup-git-versioning" -Name "Synthetic failed dependency source" -ScriptBlock {
+            $Script:CurrentStepResultStatus = "FAIL"
+            $Script:CurrentStepResultReason = "dependency fail reason"
+        }
+        Assert-SelfTest (Test-SetupStepFailedOrSkipped -Id "setup-git-versioning") "FAILED dependency source did not block dependencies."
+        Assert-SelfTest (-not [string]::IsNullOrWhiteSpace((Get-StepDependencySkipReason -Id "locate-blender"))) "FAILED dependency source did not produce a skip reason."
+        Invoke-SetupStep -Id "locate-blender" -Name "Synthetic dependent after failure" -ScriptBlock { throw "dependent should have been skipped" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "locate-blender" -Status "SKIPPED") -eq 1) "Dependent step was not skipped after FAILED dependency."
+
+        $softFatalThrew = $false
+        try {
+            Invoke-SetupStep -Id "step-soft-fatal" -Name "Synthetic soft fatal step" -ScriptBlock {
+                Add-SetupFailureRecord -Id "step-soft-fatal" -Name "Synthetic soft fatal step" -Reason "soft fatal reason" -Fatal
+                $Script:CurrentStepResultStatus = "FATAL"
+                $Script:CurrentStepResultReason = "soft fatal reason"
+            }
+        } catch { $softFatalThrew = $true }
+        Assert-SelfTest $softFatalThrew "Soft FATAL did not throw/stop."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-soft-fatal" -Status "FATAL") -eq 1) "Soft FATAL was not recorded as FATAL exactly once."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-soft-fatal" -Status "OK") -eq 0) "Soft FATAL was incorrectly recorded as OK."
+        Assert-SelfTest ((Get-SelfTestFailureCount -Id "step-soft-fatal" -Reason "soft fatal reason" -Fatal $true) -eq 1) "Soft FATAL did not produce exactly one fatal failure record."
+
+        Invoke-SetupStep -Id "step-thrown-failed" -Name "Synthetic thrown failed step" -ScriptBlock { throw "thrown fail reason" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-thrown-failed" -Status "FAILED") -eq 1) "Thrown nonfatal exception was not recorded as FAILED."
+        Assert-SelfTest ((Get-SelfTestFailureCount -Id "step-thrown-failed" -Reason "thrown fail reason" -Fatal $false) -eq 1) "Thrown nonfatal exception did not produce exactly one failure record."
+
+        $thrownFatalThrew = $false
+        try {
+            Invoke-SetupStep -Id "step-thrown-fatal" -Name "Synthetic thrown fatal step" -Fatal -ScriptBlock { throw "thrown fatal reason" }
+        } catch { $thrownFatalThrew = $true }
+        Assert-SelfTest $thrownFatalThrew "Thrown fatal exception did not throw/stop."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-thrown-fatal" -Status "FATAL") -eq 1) "Thrown fatal exception was not recorded as FATAL."
+        Assert-SelfTest ((Get-SelfTestFailureCount -Id "step-thrown-fatal" -Reason "thrown fatal reason" -Fatal $true) -eq 1) "Thrown fatal exception did not produce exactly one fatal failure record."
+
+        $Script:StepTimings.Add([pscustomobject]@{ Id = "manual-fail-status"; Name = "Manual FAIL status"; ElapsedSeconds = 0; Status = "FAIL"; Reason = "manual fail" }) | Out-Null
+        Assert-SelfTest (Test-SetupStepFailedOrSkipped -Id "manual-fail-status") "FAIL status did not block dependencies."
+
+        $state = Get-Content -LiteralPath $Script:SetupStatePath -Raw | ConvertFrom-Json
+        $stateStatuses = @($state.stepTimings | ForEach-Object { [string]$_.status })
+        foreach ($expectedStatus in @("OK", "SKIPPED", "WARN", "FAILED", "FATAL")) {
+            Assert-SelfTest ($stateStatuses -contains $expectedStatus) "Setup-state did not include expected status $expectedStatus."
+        }
+    } catch { Add-SelfTestError "Setup step status wrapper self-test failed: $($_.Exception.Message)" }
+    finally {
+        $Script:SetupSteps = $oldSteps
+        $Script:SetupStepLookup = $oldLookup
+        $Script:StepTimings = $oldTimings
+        $Script:SetupSkips = $oldSkips
+        $Script:SetupFailures = $oldFailures
+        $Script:FatalFailure = $oldFatal
+        $Script:SetupStatePath = $oldSetupStatePath
+        $Script:CurrentStepId = $oldCurrentStepId
+        $Script:CurrentStepName = $oldCurrentStepName
+        $Script:CurrentStepNumber = $oldCurrentStepNumber
+        $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
+        $Script:CurrentStepResultStatus = ""
+        $Script:CurrentStepResultReason = ""
     }
 
     try {
@@ -8479,7 +8674,7 @@ try {
 
 $hasTimedFailure = $false
 try {
-    foreach ($r in @($Script:StepTimings)) {
+    foreach ($r in (Get-ListSnapshot $Script:StepTimings)) {
         if ($null -eq $r) { continue }
         if ([string]$r.Status -match '^(FAIL|FAILED|FATAL)$') { $hasTimedFailure = $true; break }
     }
