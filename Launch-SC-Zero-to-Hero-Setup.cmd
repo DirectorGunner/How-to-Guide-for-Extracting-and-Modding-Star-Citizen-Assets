@@ -837,6 +837,7 @@ $Script:LauncherDir = [Environment]::GetEnvironmentVariable("DG_LAUNCHER_DIR")
 $Script:ToolStates = @{}
 $Script:RepoStates = @{}
 $Script:BranchStates = New-Object 'System.Collections.Generic.List[object]'
+$Script:OrchestrationRepoPath = ""
 $Script:BlenderState = [ordered]@{ status = "NotStarted"; exe = ""; version = ""; installRoot = ""; userConfigRoot = ""; addonLinked = $false; addonLinkType = "" }
 $Script:P4KState = [ordered]@{ status = "NotStarted"; build = ""; source = ""; destination = ""; partialDestination = ""; sizeBytes = 0; spaceWarning = $false; readOnly = $false; skippedReason = ""; channel = ""; starCitizenExe = ""; productVersion = ""; fileVersion = "" }
 $Script:TutorialRepoState = [ordered]@{ path = ""; originatedFromLauncher = $false; branchStatus = ""; branchStatusReason = "" }
@@ -870,6 +871,10 @@ function New-SetupStepObject {
     return [pscustomobject]@{ Id = $Id; Name = $Name }
 }
 
+function Test-ShouldRunGitVersioning {
+    return ($CreateBranches -or $CreateWorkspace -or $BuildStarBreaker -or $InstallBlenderAddon -or $SetupP4K -or $PromptForP4K -or $RunAuroraExample -or (-not [string]::IsNullOrWhiteSpace($DataP4kSource)))
+}
+
 function Initialize-SetupPlan {
     $steps = New-Object 'System.Collections.Generic.List[System.Object]'
 
@@ -895,11 +900,13 @@ function Initialize-SetupPlan {
         $steps.Add((New-SetupStepObject -Id "clone-repos" -Name "Clone or validate community repositories"))
         $steps.Add((New-SetupStepObject -Id "clone-guide-repo" -Name "Clone or validate DirectorGunner tutorial repository"))
     }
+    if (Test-ShouldRunGitVersioning) {
+        $steps.Add((New-SetupStepObject -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches"))
+    }
     if ($CreateWorkspace) {
         $steps.Add((New-SetupStepObject -Id "write-workspace" -Name "Create VS Code multi-root workspace"))
         $steps.Add((New-SetupStepObject -Id "vscode-extensions" -Name "Install recommended VS Code extensions"))
     }
-    if ($CreateBranches) { $steps.Add((New-SetupStepObject -Id "create-branches" -Name "Create safe development branches")) }
     if ($BuildStarBreaker) { $steps.Add((New-SetupStepObject -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP")) }
     if (-not $SkipBlender -and ($PromptForBlender -or $InstallBlenderAddon -or -not [string]::IsNullOrWhiteSpace($BlenderPath))) {
         $steps.Add((New-SetupStepObject -Id "locate-blender" -Name "Locate or install Blender"))
@@ -1095,7 +1102,7 @@ function Get-RecordedStepStatus {
 function Test-SetupStepFailedOrSkipped {
     param([string]$Id)
     $status = Get-RecordedStepStatus -Id $Id
-    return ($status -in @("FAILED", "SKIPPED", "FATAL"))
+    return ($status -in @("FAIL", "FAILED", "SKIPPED", "FATAL"))
 }
 
 function Get-StepDisplayState {
@@ -1121,12 +1128,13 @@ function Get-StepDisplayState {
     }
 
     $n = $StepIndex + 1
-    if ($n -eq $CurrentStepNumber) {
-        if ($CurrentStatus -eq "Complete") { return @{ State="DONE "; Glyph="[OK]"; Color="Green" } }
-        if ($CurrentStatus -eq "FAILED") { return @{ State="FAIL "; Glyph="[!!]"; Color="Red" } }
-        if ($CurrentStatus -eq "SKIPPED") { return @{ State="SKIP "; Glyph="[SK]"; Color="DarkYellow" } }
-        if ($Preview) { return @{ State="WORK "; Glyph="[>>]"; Color="Cyan" } } else { return @{ State="WORK "; Glyph="[>>]"; Color="Yellow" } }
-    }
+        if ($n -eq $CurrentStepNumber) {
+            if ($CurrentStatus -eq "Complete") { return @{ State="DONE "; Glyph="[OK]"; Color="Green" } }
+            if ($CurrentStatus -eq "FAILED") { return @{ State="FAIL "; Glyph="[!!]"; Color="Red" } }
+            if ($CurrentStatus -eq "WARN") { return @{ State="WARN "; Glyph="[!!]"; Color="Yellow" } }
+            if ($CurrentStatus -eq "SKIPPED") { return @{ State="SKIP "; Glyph="[SK]"; Color="DarkYellow" } }
+            if ($Preview) { return @{ State="WORK "; Glyph="[>>]"; Color="Cyan" } } else { return @{ State="WORK "; Glyph="[>>]"; Color="Yellow" } }
+        }
 
     if ($n -le $CompletedCount) { return @{ State="DONE "; Glyph="[OK]"; Color="DarkGray" } }
     return @{ State="WAIT "; Glyph="[--]"; Color="DarkGray" }
@@ -1163,14 +1171,15 @@ function Get-StepDependencySkipReason {
         "install-git"          { $depends = @("winget-check") }
         "install-rust"         { $depends = @("winget-check") }
         "clone-repos"          { $depends = @("install-git") }
-        "vscode-extensions"    { $depends = @("install-vscode") }
-        "create-branches"      { $depends = @("install-git", "clone-repos") }
-        "build-starbreaker"    { $depends = @("install-vsbuildtools", "install-rust", "clone-repos") }
-        "clone-guide-repo"    { $depends = @("install-git") }
-        "write-workspace"      { $depends = @("clone-repos", "clone-guide-repo") }
-        "locate-blender"       { $depends = @() }
-        "install-blender-addon"{ $depends = @("clone-repos", "locate-blender") }
-        "select-data-p4k"      { $depends = @() }
+        "clone-guide-repo"     { $depends = @("install-git") }
+        "setup-git-versioning" { $depends = @("install-git", "clone-repos", "clone-guide-repo") }
+        "vscode-extensions"    { $depends = @("write-workspace", "install-vscode") }
+        "create-branches"      { $depends = @("install-git", "clone-repos", "clone-guide-repo") }
+        "build-starbreaker"    { $depends = @("install-vsbuildtools", "install-rust", "clone-repos", "setup-git-versioning") }
+        "write-workspace"      { $depends = @("clone-repos", "clone-guide-repo", "setup-git-versioning") }
+        "locate-blender"       { $depends = @("setup-git-versioning") }
+        "install-blender-addon"{ $depends = @("clone-repos", "setup-git-versioning", "locate-blender") }
+        "select-data-p4k"      { $depends = @("setup-git-versioning") }
         "verify-sc-build"      { $depends = @("select-data-p4k") }
         "p4k-explore"          { $depends = @("verify-sc-build", "build-starbreaker") }
         "aurora-example"       { $depends = @("build-starbreaker", "verify-sc-build") }
@@ -1247,7 +1256,15 @@ function Get-FailurePlainList {
 
 function Get-BranchPlainList {
     $list = New-Object 'System.Collections.Generic.List[object]'
-    try { foreach ($r in @($Script:BranchStates)) { [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @('Repo','Path','Branch','Status','Reason'))) } } catch { }
+    try {
+        foreach ($r in @($Script:BranchStates)) {
+            [void]$list.Add((Get-SimpleObjectFromProperties -Object $r -PropertyNames @(
+                'Repo','Role','Path','GitExists','Branch','CurrentBranch','Dirty','DirtyStatus',
+                'IdentityStatus','IdentityLocalPresent','IdentityCopiedFromGlobal','IdentityFallbackWritten',
+                'Status','Reason'
+            )))
+        }
+    } catch { }
     return @($list.ToArray())
 }
 
@@ -1348,7 +1365,28 @@ function Save-SetupState {
         $branchList = New-Object 'System.Collections.Generic.List[object]'
         foreach ($r in @($Script:BranchStates)) {
             if ($null -eq $r) { continue }
-            [void]$branchList.Add([ordered]@{ repo=[string]$r.Repo; path=[string]$r.Path; branch=[string]$r.Branch; status=[string]$r.Status; reason=[string]$r.Reason })
+            $gitExists = $false; $dirty = $false; $identityLocal = $false; $identityCopied = $false; $identityFallback = $false
+            try { $gitExists = [bool]$r.GitExists } catch { }
+            try { $dirty = [bool]$r.Dirty } catch { }
+            try { $identityLocal = [bool]$r.IdentityLocalPresent } catch { }
+            try { $identityCopied = [bool]$r.IdentityCopiedFromGlobal } catch { }
+            try { $identityFallback = [bool]$r.IdentityFallbackWritten } catch { }
+            [void]$branchList.Add([ordered]@{
+                repo=[string]$r.Repo
+                role=[string]$r.Role
+                path=[string]$r.Path
+                gitExists=$gitExists
+                branchTarget=[string]$r.Branch
+                currentBranch=[string]$r.CurrentBranch
+                dirty=$dirty
+                dirtyStatus=[string]$r.DirtyStatus
+                identityStatus=[string]$r.IdentityStatus
+                identityLocalPresent=$identityLocal
+                identityCopiedFromGlobal=$identityCopied
+                identityFallbackWritten=$identityFallback
+                status=[string]$r.Status
+                reason=[string]$r.Reason
+            })
         }
 
         $repoList = New-Object 'System.Collections.Generic.List[object]'
@@ -3594,6 +3632,32 @@ function Invoke-SetupStep {
             Save-SetupState
             return
         }
+        if ($Script:CurrentStepResultStatus -eq "WARN") {
+            $reason = if ([string]::IsNullOrWhiteSpace($Script:CurrentStepResultReason)) { "Completed with warnings." } else { $Script:CurrentStepResultReason }
+            Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "WARN"
+            Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status "WARN"
+            Write-Host ("Step completed with warning: {0}" -f $reason) -ForegroundColor Yellow
+            $Script:StepTimings.Add([pscustomobject]@{
+                Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = "WARN"; Reason = $reason
+            }) | Out-Null
+            Save-SetupState
+            return
+        }
+        if ($Script:CurrentStepResultStatus -in @("FAIL", "FAILED", "FATAL")) {
+            $reason = if ([string]::IsNullOrWhiteSpace($Script:CurrentStepResultReason)) { "Step reported failure." } else { $Script:CurrentStepResultReason }
+            $statusText = if ($Script:CurrentStepResultStatus -eq "FATAL" -or $Fatal) { "FATAL" } else { "FAILED" }
+            $Script:StepTimings.Add([pscustomobject]@{
+                Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = $statusText; Reason = $reason
+            }) | Out-Null
+            Add-SetupFailureRecord -Id $Id -Name $Name -Reason $reason -LogPath $Script:LastCommandLogPath -Fatal:($statusText -eq "FATAL")
+            Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "FAILED"
+            Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status $statusText
+            Write-Host "Step failed, but setup will continue where possible." -ForegroundColor Yellow
+            Write-Host ("Reason: {0}" -f $reason) -ForegroundColor Red
+            Save-SetupState
+            if ($statusText -eq "FATAL") { throw $reason }
+            return
+        }
         Write-SetupProgress -CompletedCount $completedAfter -StepNumber $stepNumber -StepName $Name -Status "Complete"
         Write-PhaseBanner -Name $Name -StepNumber $stepNumber -Status "COMPLETE"
         $Script:StepTimings.Add([pscustomobject]@{
@@ -5106,24 +5170,234 @@ function Get-RepoOriginUrl {
     try { return ((& git -C $Path remote get-url origin 2>$null) -join "").Trim() } catch { return "" }
 }
 
+function Get-NormalizedFullPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    try { return ([IO.Path]::GetFullPath($Path)).TrimEnd([char[]]@('\','/')) } catch { return ([string]$Path).TrimEnd([char[]]@('\','/')) }
+}
+
+function Test-SamePath {
+    param([string]$Left, [string]$Right)
+    $a = Get-NormalizedFullPath -Path $Left
+    $b = Get-NormalizedFullPath -Path $Right
+    return (-not [string]::IsNullOrWhiteSpace($a) -and $a.Equals($b, [StringComparison]::OrdinalIgnoreCase))
+}
+
+function New-GitVersioningResult {
+    param(
+        [string]$Repo,
+        [string]$Role,
+        [string]$Path,
+        [string]$Branch
+    )
+    return [ordered]@{
+        Repo = $Repo
+        Role = $Role
+        Path = $Path
+        GitExists = $false
+        Branch = $Branch
+        CurrentBranch = ""
+        Dirty = $false
+        DirtyStatus = "Unknown"
+        IdentityStatus = "NotChecked"
+        IdentityLocalPresent = $false
+        IdentityCopiedFromGlobal = $false
+        IdentityFallbackWritten = $false
+        Status = "Pending"
+        Reason = ""
+    }
+}
+
+function Get-GitStatusLines {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    try {
+        $status = @(& git -C $Path status --porcelain 2>$null)
+        if ($LASTEXITCODE -ne 0) { return @("__STATUS_FAILED__ git status exited $LASTEXITCODE") }
+        return $status
+    } catch { return @("__STATUS_FAILED__ $($_.Exception.Message)") }
+}
+
+function Get-GitCurrentBranchSafe {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    try { return ((& git -C $Path branch --show-current 2>$null) -join "").Trim() } catch { return "" }
+}
+
+function Set-RepoLocalGitIdentity {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)]$Result
+    )
+    $localName = ""; $localEmail = ""; $globalName = ""; $globalEmail = ""
+    try { $localName = ((& git -C $Path config --local --get user.name 2>$null) -join "").Trim() } catch { }
+    try { $localEmail = ((& git -C $Path config --local --get user.email 2>$null) -join "").Trim() } catch { }
+
+    if ((-not [string]::IsNullOrWhiteSpace($localName)) -and (-not [string]::IsNullOrWhiteSpace($localEmail))) {
+        $Result.IdentityLocalPresent = $true
+        $Result.IdentityStatus = "RepoLocalPresent"
+        return
+    }
+
+    try { $globalName = ((& git config --global --get user.name 2>$null) -join "").Trim() } catch { }
+    try { $globalEmail = ((& git config --global --get user.email 2>$null) -join "").Trim() } catch { }
+
+    $copied = $false
+    $fallback = $false
+    if ([string]::IsNullOrWhiteSpace($localName)) {
+        if (-not [string]::IsNullOrWhiteSpace($globalName)) {
+            Run-Native -Exe "git" -Arguments @("-C", $Path, "config", "--local", "user.name", $globalName) -WorkingDirectory $Path
+            $copied = $true
+        } else {
+            Run-Native -Exe "git" -Arguments @("-C", $Path, "config", "--local", "user.name", "Local Developer") -WorkingDirectory $Path
+            $fallback = $true
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($localEmail)) {
+        if (-not [string]::IsNullOrWhiteSpace($globalEmail)) {
+            Run-Native -Exe "git" -Arguments @("-C", $Path, "config", "--local", "user.email", $globalEmail) -WorkingDirectory $Path
+            $copied = $true
+        } else {
+            Run-Native -Exe "git" -Arguments @("-C", $Path, "config", "--local", "user.email", "local@example.invalid") -WorkingDirectory $Path
+            $fallback = $true
+        }
+    }
+
+    $Result.IdentityCopiedFromGlobal = $copied
+    $Result.IdentityFallbackWritten = $fallback
+    if ($fallback -and $copied) { $Result.IdentityStatus = "MixedGlobalAndFallback" }
+    elseif ($fallback) { $Result.IdentityStatus = "FallbackWritten" }
+    elseif ($copied) { $Result.IdentityStatus = "CopiedFromGlobal" }
+    else { $Result.IdentityStatus = "RepoLocalPartial" }
+}
+
+function Get-GitignoreRulesForRepoRole {
+    param([string]$Role)
+    $common = @("target/","bin/","obj/","node_modules/",".venv/","venv/","__pycache__/","*.pyc",".env","*.log")
+    if ($Role -eq "orchestration") {
+        return @("scdata/","installers/","logs/","work/*.log","*.p4k","*.partial","setup-state.json",".setup-cache/") + $common
+    }
+    if ($Role -eq "guide") {
+        return @("installers/","logs/","work/*.log","*.p4k","*.partial","setup-state.json",".setup-cache/") + $common
+    }
+    return $common
+}
+
+function Merge-GitignoreRules {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string[]]$Rules = @()
+    )
+    if ($Rules.Count -eq 0) { return $false }
+    $gitignore = Join-Path $Path ".gitignore"
+    $existing = @()
+    if (Test-Path -LiteralPath $gitignore) {
+        try { $existing = @(Get-Content -LiteralPath $gitignore -ErrorAction Stop) } catch { $existing = @() }
+    }
+    $seen = @{}
+    foreach ($line in @($existing)) {
+        $key = ([string]$line).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($key) -and -not $seen.ContainsKey($key)) { $seen[$key] = $true }
+    }
+    $missing = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($rule in @($Rules)) {
+        $key = ([string]$rule).Trim()
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        if (-not $seen.ContainsKey($key)) {
+            [void]$missing.Add($key)
+            $seen[$key] = $true
+        }
+    }
+    if ($missing.Count -eq 0) { return $false }
+    if ($DryRun) {
+        Write-Host ("[dry-run] Would append {0} .gitignore rule(s) to {1}" -f $missing.Count, $gitignore) -ForegroundColor DarkCyan
+        return $false
+    }
+    if (Test-Path -LiteralPath $gitignore) {
+        Add-Content -LiteralPath $gitignore -Value @($missing.ToArray()) -Encoding UTF8
+    } else {
+        Set-Content -LiteralPath $gitignore -Value @($missing.ToArray()) -Encoding UTF8
+    }
+    return $true
+}
+
+function Test-KnownStarCitizenChildRepoPath {
+    param([string]$Path)
+    $leaf = Split-Path (Get-NormalizedFullPath -Path $Path) -Leaf
+    return ($leaf -in @("StarBreaker", "Blender-Tools", "unp4k", "Cryengine-Converter", "SCTextureConverter", "scdatatools", "qtvscodestyle", $GuideRepoName))
+}
+
+function Resolve-SafeOrchestrationRepoPath {
+    $starRoot = Get-NormalizedFullPath -Path $StarCitizenRoot
+    if ([string]::IsNullOrWhiteSpace($starRoot)) { return "" }
+    if (Test-Path (Join-Path $starRoot ".git")) { return $starRoot }
+
+    $starts = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($Script:LauncherDir)) { [void]$starts.Add($Script:LauncherDir) }
+    if (-not [string]::IsNullOrWhiteSpace($Script:LauncherPath)) {
+        try { [void]$starts.Add((Split-Path $Script:LauncherPath -Parent)) } catch { }
+    }
+    try { [void]$starts.Add((Get-Location).Path) } catch { }
+
+    foreach ($start in @($starts.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)) {
+        try {
+            $dir = Get-Item -LiteralPath $start -ErrorAction SilentlyContinue
+            while ($null -ne $dir) {
+                $full = Get-NormalizedFullPath -Path $dir.FullName
+                if ([string]::IsNullOrWhiteSpace($full) -or -not $full.StartsWith($starRoot, [StringComparison]::OrdinalIgnoreCase)) { break }
+                if ((Test-Path (Join-Path $full ".git")) -and (-not (Test-SamePath -Left $full -Right $GuideRepoPath)) -and (-not (Test-KnownStarCitizenChildRepoPath -Path $full))) {
+                    return $full
+                }
+                if (Test-SamePath -Left $full -Right $starRoot) { break }
+                $parent = Split-Path $full -Parent
+                if ([string]::IsNullOrWhiteSpace($parent) -or (Test-SamePath -Left $parent -Right $full)) { break }
+                $dir = Get-Item -LiteralPath $parent -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    return ""
+}
+
+function Test-StarCitizenRootUnsafeForAutoGitInit {
+    if (Test-Path (Join-Path $StarCitizenRoot ".git")) { return $false }
+    if (-not (Test-Path -LiteralPath $StarCitizenRoot)) { return $false }
+    try {
+        foreach ($name in @("scdata","prompts","work","output","reports","installers","logs")) {
+            if (Test-Path -LiteralPath (Join-Path $StarCitizenRoot $name)) { return $true }
+        }
+        $childRepo = @(Get-ChildItem -LiteralPath $StarCitizenRoot -Force -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName ".git") } |
+            Select-Object -First 1)
+        if ($childRepo.Count -gt 0) { return $true }
+        $largeLocal = @(Get-ChildItem -LiteralPath $StarCitizenRoot -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '(?i)\.(p4k|partial)$' } |
+            Select-Object -First 1)
+        if ($largeLocal.Count -gt 0) { return $true }
+    } catch { return $true }
+    return $false
+}
+
 function Find-ExistingTutorialRepoFromLauncher {
     $candidates = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($Script:LauncherDir)) { [void]$candidates.Add($Script:LauncherDir) }
     if (-not [string]::IsNullOrWhiteSpace($Script:LauncherPath)) { [void]$candidates.Add((Split-Path $Script:LauncherPath -Parent)) }
+    [void]$candidates.Add($GuideRepoPath)
+    $starRoot = Get-NormalizedFullPath -Path $StarCitizenRoot
     foreach ($start in @($candidates.ToArray() | Select-Object -Unique)) {
         try {
             $dir = Get-Item -LiteralPath $start -ErrorAction SilentlyContinue
             while ($null -ne $dir) {
-                if (Test-Path (Join-Path $dir.FullName ".git")) {
-                    $origin = Get-RepoOriginUrl -Path $dir.FullName
-                    if ($origin -match 'DirectorGunner/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets') {
-                        $Script:TutorialRepoState.path = $dir.FullName
+                $full = Get-NormalizedFullPath -Path $dir.FullName
+                if ([string]::IsNullOrWhiteSpace($full) -or (-not $full.StartsWith($starRoot, [StringComparison]::OrdinalIgnoreCase))) { break }
+                if (Test-Path (Join-Path $full ".git")) {
+                    $origin = Get-RepoOriginUrl -Path $full
+                    if (($origin -match 'DirectorGunner/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets') -or (Test-SamePath -Left $full -Right $GuideRepoPath) -or ((Split-Path $full -Leaf) -eq $GuideRepoName)) {
+                        $Script:TutorialRepoState.path = $full
                         $Script:TutorialRepoState.originatedFromLauncher = $true
-                        return $dir.FullName
+                        return $full
                     }
                 }
-                $parent = Split-Path $dir.FullName -Parent
-                if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $dir.FullName) { break }
+                if (Test-SamePath -Left $full -Right $starRoot) { break }
+                $parent = Split-Path $full -Parent
+                if ([string]::IsNullOrWhiteSpace($parent) -or (Test-SamePath -Left $parent -Right $full)) { break }
                 $dir = Get-Item -LiteralPath $parent -ErrorAction SilentlyContinue
             }
         } catch { }
@@ -5206,75 +5480,155 @@ function Ensure-GitBranch {
     param(
         [Parameter(Mandatory=$true)][string]$Path,
         [Parameter(Mandatory=$true)][string]$Branch,
-        [string]$RepoName = ""
+        [string]$RepoName = "",
+        [string]$Role = "tool",
+        [switch]$SwitchBranch
     )
-    $result = [ordered]@{ repo=$RepoName; path=$Path; branch=$Branch; status="Pending"; reason="" }
-    if ([string]::IsNullOrWhiteSpace($RepoName)) { $result.repo = Split-Path $Path -Leaf }
+    if ([string]::IsNullOrWhiteSpace($RepoName)) { $RepoName = Split-Path $Path -Leaf }
+    $result = New-GitVersioningResult -Repo $RepoName -Role $Role -Path $Path -Branch $Branch
     try {
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+            $result.Status = "WARN"; $result.Reason = "Repository path is missing."
+            Write-Warning "Skipping Git versioning; repository path is missing: $Path"
+            return
+        }
         if (-not (Test-Path (Join-Path $Path ".git"))) {
-            $result.status = "SKIPPED"; $result.reason = "Not a Git repo."
-            Write-Warning "Skipping branch creation; not a Git repo: $Path"
+            $result.Status = "WARN"; $result.Reason = "Not a Git repo; skipped because this path is not safe to initialize automatically."
+            Write-Warning "Skipping Git versioning; not a Git repo: $Path"
             return
         }
-        $current = ((& git -C $Path branch --show-current 2>$null) -join "").Trim()
-        if ($current -eq $Branch) { $result.status = "OK"; Write-Host "Already on $Branch in $Path" -ForegroundColor Green; return }
-        $status = @(& git -C $Path status --porcelain 2>$null)
-        if (-not [string]::IsNullOrWhiteSpace(($status -join ""))) {
-            $result.status = "WARN"; $result.reason = "Working tree has local changes; branch not switched."
-            Write-Warning "Working tree has local changes; not switching branches automatically: $Path"
-            foreach ($line in ($status | Select-Object -First 10)) { Write-Host "  $line" -ForegroundColor DarkYellow }
-            return
-        }
-        $existing = ((& git -C $Path branch --list $Branch 2>$null) -join "").Trim()
-        if (-not [string]::IsNullOrWhiteSpace($existing)) {
-            Run-Native -Exe "git" -Arguments @("-C", $Path, "checkout", $Branch) -WorkingDirectory $Path
+        $result.GitExists = $true
+        Set-RepoLocalGitIdentity -Path $Path -Result $result
+        $result.CurrentBranch = Get-GitCurrentBranchSafe -Path $Path
+        $status = @(Get-GitStatusLines -Path $Path)
+        if (($status -join "") -match '^__STATUS_FAILED__') { throw ($status -join "`n") }
+        $result.Dirty = -not [string]::IsNullOrWhiteSpace(($status -join ""))
+        $result.DirtyStatus = if ($result.Dirty) { (($status | Select-Object -First 8) -join " | ") } else { "Clean" }
+
+        if ($SwitchBranch) {
+            if ($result.CurrentBranch -eq $Branch) {
+                $result.Status = "OK"
+                $result.Reason = "Already on target branch."
+                Write-Host "Already on $Branch in $Path" -ForegroundColor Green
+            } elseif ($result.Dirty) {
+                $result.Status = "WARN"
+                $result.Reason = "Working tree has local changes; branch not switched."
+                Write-Warning "Working tree has local changes; not switching branches automatically: $Path"
+                foreach ($line in ($status | Select-Object -First 10)) { Write-Host "  $line" -ForegroundColor DarkYellow }
+            } else {
+                $existing = ((& git -C $Path branch --list $Branch 2>$null) -join "").Trim()
+                if (-not [string]::IsNullOrWhiteSpace($existing)) {
+                    Run-Native -Exe "git" -Arguments @("-C", $Path, "checkout", $Branch) -WorkingDirectory $Path
+                } else {
+                    Run-Native -Exe "git" -Arguments @("-C", $Path, "checkout", "-b", $Branch) -WorkingDirectory $Path
+                }
+                $result.CurrentBranch = Get-GitCurrentBranchSafe -Path $Path
+                if ($result.CurrentBranch -eq $Branch) { $result.Status = "OK"; $result.Reason = "Target branch ready." }
+                else { $result.Status = "FAILED"; $result.Reason = "Final branch did not verify as expected." }
+            }
         } else {
-            Run-Native -Exe "git" -Arguments @("-C", $Path, "checkout", "-b", $Branch) -WorkingDirectory $Path
+            $result.Status = "OK"
+            $result.Reason = "Branch switching was not requested."
         }
-        $verify = ((& git -C $Path branch --show-current 2>$null) -join "").Trim()
-        if ($verify -eq $Branch) { $result.status = "OK" } else { $result.status = "WARN"; $result.reason = "Final branch did not verify as expected." }
+
+        $gitignoreChanged = Merge-GitignoreRules -Path $Path -Rules (Get-GitignoreRulesForRepoRole -Role $Role)
+        if ($gitignoreChanged -and $result.Status -eq "OK") {
+            $result.Status = "WARN"
+            $result.Reason = (($result.Reason + " Missing .gitignore rules were merged; review the uncommitted .gitignore change.").Trim())
+        }
+        if ($result.IdentityFallbackWritten -and $result.Status -eq "OK") {
+            $result.Status = "WARN"
+            $result.Reason = (($result.Reason + " Repo-local fallback Git identity was written.").Trim())
+        } elseif ($result.IdentityFallbackWritten -and -not ($result.Reason -match 'fallback Git identity')) {
+            $result.Reason = (($result.Reason + " Repo-local fallback Git identity was written.").Trim())
+        }
     } catch {
-        $result.status = "FAIL"; $result.reason = $_.Exception.Message
+        $result.Status = "FAILED"; $result.Reason = $_.Exception.Message
         Write-Warning ("Branch setup failed for {0}: {1}" -f $Path, $_.Exception.Message)
     } finally {
         $Script:BranchStates.Add([pscustomobject]$result) | Out-Null
-        if ($result.repo -eq $GuideRepoName) { $Script:TutorialRepoState.branchStatus = $result.status; $Script:TutorialRepoState.branchStatusReason = $result.reason }
+        if ($result.Repo -eq $GuideRepoName) { $Script:TutorialRepoState.branchStatus = $result.Status; $Script:TutorialRepoState.branchStatusReason = $result.Reason }
     }
 }
 
 function Initialize-PrivateRepoIfUseful {
-    param([Parameter(Mandatory=$true)][string]$Path)
-    if (-not (Test-Path $Path)) { return }
-    if (Test-Path (Join-Path $Path ".git")) { return }
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$InitialBranch = "dev-private-review"
+    )
+    if (-not (Test-Path $Path)) { return $false }
+    if (Test-Path (Join-Path $Path ".git")) { return $true }
 
     $files = Get-ChildItem $Path -Force | Where-Object { $_.Name -ne ".git" } | Select-Object -First 1
-    if ($null -eq $files) { Write-Host "Private placeholder folder is empty; not initializing Git: $Path"; return }
+    if ($null -eq $files) { Write-Host "Private placeholder folder is empty; not initializing Git: $Path"; return $false }
 
-    Run-Native -Exe "git" -Arguments @("init") -WorkingDirectory $Path
-    Run-Native -Exe "git" -Arguments @("config", "user.name", "Local Developer") -WorkingDirectory $Path
-    Run-Native -Exe "git" -Arguments @("config", "user.email", "local@example.invalid") -WorkingDirectory $Path
-    Run-Native -Exe "git" -Arguments @("checkout", "-b", "local-private-baseline") -WorkingDirectory $Path
-    "__pycache__/", "*.pyc", "*.pyo", "*.pyd", ".venv/", "venv/", ".env", "*.log", ".DS_Store", "Thumbs.db", ".vscode/", ".idea/" | Set-Content -Encoding UTF8 (Join-Path $Path ".gitignore")
-    Run-Native -Exe "git" -Arguments @("add", ".") -WorkingDirectory $Path
-    Run-Native -Exe "git" -Arguments @("commit", "-m", "Local private baseline import") -IgnoreExitCode -WorkingDirectory $Path
-    Run-Native -Exe "git" -Arguments @("checkout", "-b", "dev-private-review") -WorkingDirectory $Path
+    Run-Native -Exe "git" -Arguments @("init", "-b", $InitialBranch) -IgnoreExitCode -WorkingDirectory $Path
+    if (-not (Test-Path (Join-Path $Path ".git"))) { Run-Native -Exe "git" -Arguments @("init") -WorkingDirectory $Path }
     Run-Native -Exe "git" -Arguments @("remote", "-v") -IgnoreExitCode -WorkingDirectory $Path
+    return (Test-Path (Join-Path $Path ".git"))
 }
 
 function Create-SafeBranches {
     Write-Step "Creating safe development branches"
-    $Script:BranchStates.Clear()
-    Ensure-GitBranch -RepoName "StarBreaker" -Path (Join-Path $StarCitizenRoot "StarBreaker") -Branch "dev-mcp-blender-workflow"
-    Ensure-GitBranch -RepoName "Blender-Tools" -Path (Join-Path $StarCitizenRoot "Blender-Tools") -Branch "dev-direct-p4k-workflow"
-    Ensure-GitBranch -RepoName "unp4k" -Path (Join-Path $StarCitizenRoot "unp4k") -Branch "dev-direct-p4k-workflow"
-    Ensure-GitBranch -RepoName "Cryengine-Converter" -Path (Join-Path $StarCitizenRoot "Cryengine-Converter") -Branch "dev-sc-asset-pipeline"
-    Ensure-GitBranch -RepoName "SCTextureConverter" -Path (Join-Path $StarCitizenRoot "SCTextureConverter") -Branch "dev-sc-texture-pipeline"
-    Initialize-PrivateRepoIfUseful -Path (Join-Path $StarCitizenRoot "scdatatools")
-    Initialize-PrivateRepoIfUseful -Path (Join-Path $StarCitizenRoot "qtvscodestyle")
-    Ensure-GitBranch -RepoName "scdatatools" -Path (Join-Path $StarCitizenRoot "scdatatools") -Branch "dev-private-review"
-    Ensure-GitBranch -RepoName "qtvscodestyle" -Path (Join-Path $StarCitizenRoot "qtvscodestyle") -Branch "dev-private-review"
+    Ensure-GitBranch -RepoName "StarBreaker" -Path (Join-Path $StarCitizenRoot "StarBreaker") -Branch "dev-mcp-blender-workflow" -Role "tool" -SwitchBranch:$CreateBranches
+    Ensure-GitBranch -RepoName "Blender-Tools" -Path (Join-Path $StarCitizenRoot "Blender-Tools") -Branch "dev-direct-p4k-workflow" -Role "tool" -SwitchBranch:$CreateBranches
+    Ensure-GitBranch -RepoName "unp4k" -Path (Join-Path $StarCitizenRoot "unp4k") -Branch "dev-direct-p4k-workflow" -Role "tool" -SwitchBranch:$CreateBranches
+    Ensure-GitBranch -RepoName "Cryengine-Converter" -Path (Join-Path $StarCitizenRoot "Cryengine-Converter") -Branch "dev-sc-asset-pipeline" -Role "tool" -SwitchBranch:$CreateBranches
+    Ensure-GitBranch -RepoName "SCTextureConverter" -Path (Join-Path $StarCitizenRoot "SCTextureConverter") -Branch "dev-sc-texture-pipeline" -Role "tool" -SwitchBranch:$CreateBranches
+    $scdataToolsPath = Join-Path $StarCitizenRoot "scdatatools"
+    $qtStylePath = Join-Path $StarCitizenRoot "qtvscodestyle"
+    if (Initialize-PrivateRepoIfUseful -Path $scdataToolsPath -InitialBranch "dev-private-review") {
+        Ensure-GitBranch -RepoName "scdatatools" -Path $scdataToolsPath -Branch "dev-private-review" -Role "private" -SwitchBranch:$CreateBranches
+    } else {
+        $Script:BranchStates.Add([pscustomobject](New-GitVersioningResult -Repo "scdatatools" -Role "private" -Path $scdataToolsPath -Branch "dev-private-review")) | Out-Null
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED"
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = "Private placeholder folder is empty or missing; no Git repo initialized."
+    }
+    if (Initialize-PrivateRepoIfUseful -Path $qtStylePath -InitialBranch "dev-private-review") {
+        Ensure-GitBranch -RepoName "qtvscodestyle" -Path $qtStylePath -Branch "dev-private-review" -Role "private" -SwitchBranch:$CreateBranches
+    } else {
+        $Script:BranchStates.Add([pscustomobject](New-GitVersioningResult -Repo "qtvscodestyle" -Role "private" -Path $qtStylePath -Branch "dev-private-review")) | Out-Null
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED"
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = "Private placeholder folder is empty or missing; no Git repo initialized."
+    }
     $guidePath = if (-not [string]::IsNullOrWhiteSpace($Script:TutorialRepoState.path)) { $Script:TutorialRepoState.path } else { $GuideRepoPath }
-    Ensure-GitBranch -RepoName $GuideRepoName -Path $guidePath -Branch "dev-guide-improvements"
+    Ensure-GitBranch -RepoName $GuideRepoName -Path $guidePath -Branch "dev-guide-improvements" -Role "guide" -SwitchBranch:$CreateBranches
+    if (-not [string]::IsNullOrWhiteSpace($Script:OrchestrationRepoPath)) {
+        Ensure-GitBranch -RepoName "starcitizen-orchestration" -Path $Script:OrchestrationRepoPath -Branch "dev-setup-stabilization" -Role "orchestration" -SwitchBranch:$CreateBranches
+    }
+}
+
+function Initialize-GitVersioning {
+    Write-Step "Initializing local Git versioning and safe development branches"
+    Require-Command "git" | Out-Null
+    $Script:BranchStates.Clear()
+
+    $guidePath = if (-not [string]::IsNullOrWhiteSpace($Script:TutorialRepoState.path)) { $Script:TutorialRepoState.path } else { Find-ExistingTutorialRepoFromLauncher }
+    if ([string]::IsNullOrWhiteSpace($guidePath)) { $guidePath = $GuideRepoPath }
+    $Script:TutorialRepoState.path = $guidePath
+
+    $orchestrationPath = Resolve-SafeOrchestrationRepoPath
+    if (-not [string]::IsNullOrWhiteSpace($orchestrationPath) -and (-not (Test-SamePath -Left $orchestrationPath -Right $guidePath))) {
+        $Script:OrchestrationRepoPath = $orchestrationPath
+    } elseif (Test-StarCitizenRootUnsafeForAutoGitInit) {
+        $rootResult = New-GitVersioningResult -Repo "starcitizen-orchestration" -Role "orchestration" -Path $StarCitizenRoot -Branch "dev-setup-stabilization"
+        $rootResult.Status = "WARN"
+        $rootResult.Reason = "Project root contains child repos or generated/local data; skipped broad Git init."
+        $Script:BranchStates.Add([pscustomobject]$rootResult) | Out-Null
+        Write-Warning $rootResult.Reason
+    }
+
+    Create-SafeBranches
+
+    $failed = @($Script:BranchStates | Where-Object { ([string]$_.Status) -match '^(FAIL|FAILED|FATAL)$' })
+    $warned = @($Script:BranchStates | Where-Object { ([string]$_.Status) -eq 'WARN' -or ([string]$_.Status) -eq 'SKIPPED' })
+    if ($failed.Count -gt 0) {
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = "One or more Git versioning or branch operations failed."
+    } elseif ($warned.Count -gt 0) {
+        $Script:CurrentStepResultStatus = "WARN"
+        $Script:CurrentStepResultReason = "One or more Git versioning or branch operations need review."
+    }
 }
 
 function Get-VSBuildToolsInstallPath {
@@ -6432,15 +6786,16 @@ function Show-SetupOutcomeSummary {
 
     $failureCount = [int]$failures.Count
     $skipCount = [int]$skips.Count
+    $warningCount = @($Script:StepTimings | Where-Object { [string]$_.Status -eq "WARN" }).Count
 
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor DarkCyan
-    if ($failureCount -eq 0 -and $skipCount -eq 0) {
+    if ($failureCount -eq 0 -and $skipCount -eq 0 -and $warningCount -eq 0) {
         Write-Host " SETUP FINISHED SUCCESSFULLY" -ForegroundColor Green
     } elseif ($Script:FatalFailure) {
         Write-Host " SETUP STOPPED AFTER A FATAL PRE-FLIGHT FAILURE" -ForegroundColor Red
     } else {
-        Write-Host (" SETUP FINISHED WITH " + $failureCount + " FAILED STEP(S) AND " + $skipCount + " SKIPPED STEP(S)") -ForegroundColor Yellow
+        Write-Host (" SETUP FINISHED WITH " + $failureCount + " FAILED STEP(S), " + $warningCount + " WARNING STEP(S), AND " + $skipCount + " SKIPPED STEP(S)") -ForegroundColor Yellow
     }
     Write-Host "================================================================" -ForegroundColor DarkCyan
 
@@ -6470,7 +6825,23 @@ function Show-SetupOutcomeSummary {
         }
     }
 
-    if ($failureCount -gt 0 -or $skipCount -gt 0) {
+    if ($Script:BranchStates.Count -gt 0) {
+        Write-Host "GIT VERSIONING STATUS:" -ForegroundColor Cyan
+        foreach ($b in @($Script:BranchStates)) {
+            $color = switch ([string]$b.Status) {
+                "OK" { "Green" }
+                "WARN" { "Yellow" }
+                "SKIPPED" { "DarkYellow" }
+                default { "Red" }
+            }
+            Write-Host ("  - {0} -> {1}: {2}" -f [string]$b.Repo, [string]$b.Branch, [string]$b.Status) -ForegroundColor $color
+            if (-not [string]::IsNullOrWhiteSpace([string]$b.IdentityStatus)) { Write-Host ("    Identity: " + [string]$b.IdentityStatus) -ForegroundColor DarkCyan }
+            if (-not [string]::IsNullOrWhiteSpace([string]$b.CurrentBranch)) { Write-Host ("    Current branch: " + [string]$b.CurrentBranch) -ForegroundColor DarkCyan }
+            if (-not [string]::IsNullOrWhiteSpace([string]$b.Reason)) { Write-Host ("    Reason: " + [string]$b.Reason) -ForegroundColor DarkYellow }
+        }
+    }
+
+    if ($failureCount -gt 0 -or $skipCount -gt 0 -or $warningCount -gt 0) {
         Write-Host ""
         Write-Host "Recommended next action:" -ForegroundColor Cyan
         Write-Host "  Re-run the same launcher. Completed steps are validated and skipped or updated where practical." -ForegroundColor Cyan
@@ -6577,6 +6948,14 @@ function Get-ResumeHintForStep {
                 "    3. To skip cloning on next run: omit -CloneRepos"
             )
         }
+        '^setup-git-versioning$' {
+            return @(
+                "  Git versioning needs review. Try:",
+                "    1. Check the Git versioning status section above",
+                "    2. Commit, stash, or intentionally leave local changes before branch switching",
+                "    3. Re-run with -CreateBranches when the target repo working trees are clean"
+            )
+        }
         '^(write-workspace|vscode-extensions)$' {
             return @(
                 "  Workspace / extensions failed. Try:",
@@ -6636,6 +7015,7 @@ function Show-StepTimingSummary {
         $color = switch ($r.Status) {
             "OK"      { "Green" }
             "Preview" { "DarkGray" }
+            "WARN"    { "Yellow" }
             "FAILED"  { "Red" }
             "FATAL"   { "Red" }
             "SKIPPED" { "DarkYellow" }
@@ -6644,6 +7024,7 @@ function Show-StepTimingSummary {
         $tag = switch ($r.Status) {
             "OK"      { "[ OK ]" }
             "Preview" { "[ pv ]" }
+            "WARN"    { "[WARN]" }
             "FAILED"  { "[FAIL]" }
             "FATAL"   { "[XX ]" }
             "SKIPPED" { "[SKIP]" }
@@ -7138,11 +7519,13 @@ try {
         Invoke-SetupStep -Id "clone-repos" -Name "Clone or validate community repositories" -ScriptBlock { Sync-Repositories }
         Invoke-SetupStep -Id "clone-guide-repo" -Name "Clone or validate DirectorGunner tutorial repository" -ScriptBlock { Sync-GuideRepository }
     }
+    if (Test-ShouldRunGitVersioning) {
+        Invoke-SetupStep -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches" -ScriptBlock { Initialize-GitVersioning }
+    }
     if ($CreateWorkspace) {
         Invoke-SetupStep -Id "write-workspace" -Name "Create VS Code multi-root workspace" -ScriptBlock { Write-VSCodeWorkspace }
         Invoke-SetupStep -Id "vscode-extensions" -Name "Install recommended VS Code extensions" -ScriptBlock { Install-VSCodeExtensions }
     }
-    if ($CreateBranches) { Invoke-SetupStep -Id "create-branches" -Name "Create safe development branches" -ScriptBlock { Create-SafeBranches } }
     if ($BuildStarBreaker) { Invoke-SetupStep -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP" -ScriptBlock { Build-StarBreakerProject } }
     if (-not $SkipBlender -and ($PromptForBlender -or $InstallBlenderAddon -or -not [string]::IsNullOrWhiteSpace($BlenderPath))) {
         Invoke-SetupStep -Id "locate-blender" -Name "Locate or install Blender" -ScriptBlock { Select-OrInstallBlender }
