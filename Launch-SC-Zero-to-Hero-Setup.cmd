@@ -665,6 +665,11 @@ exit 1
 .EXAMPLE
   Run unattended after reviewing the setup plan once:
     .\SC-Zero-to-Hero-Setup.ps1 -All -AssumeYes
+  Build Tools still asks for explicit confirmation unless -AssumeBuildToolsYes is also supplied.
+
+.EXAMPLE
+  Fully automate Build Tools approval for a controlled developer automation run:
+    .\SC-Zero-to-Hero-Setup.ps1 -All -AssumeYes -AssumeBuildToolsYes
 
 .EXAMPLE
   Run the launcher preview mode to review the visual step flow without installing anything.
@@ -729,6 +734,7 @@ param(
     [ValidateRange(20,100)][int]$ProgressBarWidth = 42,
     [ValidateSet("CompactNfo","DirectorGunnerAscii","SceneBox","UnicodeGlitch")][string]$BannerStyle = "CompactNfo",
     [switch]$AssumeYes,
+    [switch]$AssumeBuildToolsYes,
     [switch]$ListSteps,
     [switch]$UpdateExistingRepos,
     [switch]$ReplaceBlenderAddonLink,
@@ -4611,6 +4617,158 @@ function Run-Native {
     }
 }
 
+function Test-GitBlockedComponentOutput {
+    param([string[]]$OutputLines = @())
+
+    $text = (@($OutputLines) | ForEach-Object { [string]$_ }) -join "`n"
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [pscustomobject]@{ Blocked = $false; Pattern = ""; Reason = "" }
+    }
+
+    $patterns = @(
+        "Smart App Control",
+        "Part of this app has been blocked",
+        "msys-2.0.dll",
+        "libintl-8.dll",
+        "libpcre2",
+        "Bad Image",
+        "error status 0xc0e90002",
+        "0xc0e90002",
+        "bash.exe",
+        "unable to load",
+        "not designed to run on Windows",
+        "contains an error"
+    )
+
+    foreach ($pattern in $patterns) {
+        if ($text -match ("(?i)" + [regex]::Escape($pattern))) {
+            $reason = "Git for Windows appears blocked or broken by Windows security/trust controls (matched '$pattern'). Review Windows Security / Smart App Control settings or install Git from a trusted source; setup cannot reliably continue until Git works."
+            return [pscustomobject]@{ Blocked = $true; Pattern = $pattern; Reason = $reason }
+        }
+    }
+
+    return [pscustomobject]@{ Blocked = $false; Pattern = ""; Reason = "" }
+}
+
+function New-GitHealthCheckResultFromCommandResults {
+    param([object[]]$CommandResults = @())
+
+    $allOutput = New-Object 'System.Collections.Generic.List[string]'
+    $firstFailure = $null
+    $version = ""
+
+    foreach ($result in @($CommandResults)) {
+        $command = ""
+        $exitCode = 1
+        $output = @()
+        try { $command = [string]$result.Command } catch { }
+        try { $exitCode = [int]$result.ExitCode } catch { $exitCode = 1 }
+        try { $output = @($result.Output) } catch { $output = @() }
+
+        foreach ($line in @($output)) {
+            $lineText = [string]$line
+            if (-not [string]::IsNullOrWhiteSpace($lineText)) {
+                [void]$allOutput.Add($lineText)
+                if ([string]::IsNullOrWhiteSpace($version) -and $lineText -match '(?i)^git version\s+(.+)$') {
+                    $version = $lineText.Trim()
+                }
+            }
+        }
+
+        $blocked = Test-GitBlockedComponentOutput -OutputLines $output
+        if ([bool]$blocked.Blocked) {
+            $summary = (@($allOutput.ToArray()) | Select-Object -First 6) -join " | "
+            return [pscustomobject]@{
+                Ready = $false; Status = "Blocked"; Reason = [string]$blocked.Reason
+                Pattern = [string]$blocked.Pattern; Version = $version; Command = $command
+                OutputSummary = $summary
+            }
+        }
+
+        if (($exitCode -ne 0) -and ($null -eq $firstFailure)) {
+            $firstFailure = [pscustomobject]@{ Command = $command; ExitCode = $exitCode }
+        }
+    }
+
+    if ($null -ne $firstFailure) {
+        $summary = (@($allOutput.ToArray()) | Select-Object -First 6) -join " | "
+        $reason = "Git health check failed during '$($firstFailure.Command)' with exit code $($firstFailure.ExitCode). Setup cannot reliably continue until Git works."
+        return [pscustomobject]@{
+            Ready = $false; Status = "Broken"; Reason = $reason
+            Pattern = ""; Version = $version; Command = [string]$firstFailure.Command
+            OutputSummary = $summary
+        }
+    }
+
+    return [pscustomobject]@{
+        Ready = $true; Status = "OK"; Reason = "Git validated with version, init, status, and repo-local config checks."
+        Pattern = ""; Version = $version; Command = ""; OutputSummary = ((@($allOutput.ToArray()) | Select-Object -First 6) -join " | ")
+    }
+}
+
+function Invoke-GitHealthCommand {
+    param(
+        [string]$GitExe = "git",
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = ""
+    )
+
+    $display = Format-CommandDisplay -Exe $GitExe -Arguments $Arguments
+    if ($DryRun) {
+        return [pscustomobject]@{ Command = $display; ExitCode = 0; Output = @("dry-run: $display") }
+    }
+
+    Assert-InstallerExternalCommandAllowed -Exe $GitExe -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+    $output = @()
+    $exitCode = 1
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { Push-Location -LiteralPath $WorkingDirectory }
+        try {
+            $output = @(& $GitExe @Arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) { $exitCode = 0 }
+        } finally {
+            if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { Pop-Location }
+        }
+    } catch {
+        $output = @($_.Exception.Message)
+        $exitCode = 1
+    }
+
+    return [pscustomobject]@{ Command = $display; ExitCode = [int]$exitCode; Output = @($output) }
+}
+
+function Invoke-GitHealthCheck {
+    param(
+        [string]$GitExe = "git",
+        [string]$WorkRoot = ""
+    )
+
+    $results = New-Object 'System.Collections.Generic.List[object]'
+    [void]$results.Add((Invoke-GitHealthCommand -GitExe $GitExe -Arguments @("--version")))
+    $initial = New-GitHealthCheckResultFromCommandResults -CommandResults @($results.ToArray())
+    if (-not [bool]$initial.Ready) { return $initial }
+
+    if ([string]::IsNullOrWhiteSpace($WorkRoot)) { $WorkRoot = $Script:AgentWorkRoot }
+    if ([string]::IsNullOrWhiteSpace($WorkRoot)) { $WorkRoot = $Script:OriginalAgentWorkRoot }
+    if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
+        return [pscustomobject]@{
+            Ready = $false; Status = "Broken"; Reason = "Git health check could not find a safe work root for temporary local repo validation."
+            Pattern = ""; Version = [string]$initial.Version; Command = ""; OutputSummary = [string]$initial.OutputSummary
+        }
+    }
+
+    $healthRoot = Join-Path $WorkRoot ".setup-cache\git-health"
+    $repoRoot = Join-Path $healthRoot ("repo-" + [guid]::NewGuid().ToString("N"))
+    New-InstallerDirectory -Path $repoRoot
+
+    [void]$results.Add((Invoke-GitHealthCommand -GitExe $GitExe -Arguments @("init", "--quiet") -WorkingDirectory $repoRoot))
+    [void]$results.Add((Invoke-GitHealthCommand -GitExe $GitExe -Arguments @("status", "--short") -WorkingDirectory $repoRoot))
+    [void]$results.Add((Invoke-GitHealthCommand -GitExe $GitExe -Arguments @("config", "--local", "--get", "core.repositoryformatversion") -WorkingDirectory $repoRoot))
+
+    return (New-GitHealthCheckResultFromCommandResults -CommandResults @($results.ToArray()))
+}
+
 function Run-ProcessWait {
     param(
         [Parameter(Mandatory=$true)][string]$FilePath,
@@ -5690,6 +5848,7 @@ function Resolve-VSBuildToolsInstallDecision {
         [bool]$AlreadyValid = $false,
         [bool]$PartialDetected = $false,
         [bool]$AssumeYesEnabled = $false,
+        [bool]$AssumeBuildToolsYesEnabled = $false,
         [bool]$NonLiveMode = $false,
         [string]$UserChoice = ""
     )
@@ -5706,10 +5865,10 @@ function Resolve-VSBuildToolsInstallDecision {
             Reason = "Build Tools install skipped in safe non-live mode."; Source = "non-live"
         }
     }
-    if ($AssumeYesEnabled) {
+    if ($AssumeBuildToolsYesEnabled) {
         return [pscustomobject]@{
             Status = "Approved"; ShouldPrompt = $false; ShouldInstall = $true; Skipped = $false
-            Reason = "Build Tools install approved by -AssumeYes."; Source = "assume-yes"
+            Reason = "Build Tools install approved by -AssumeBuildToolsYes."; Source = "assume-build-tools-yes"
         }
     }
 
@@ -5752,7 +5911,7 @@ function Read-VSBuildToolsInstallDecision {
 
     while ($true) {
         $answer = Read-Host "Build Tools install choice [Y/N]"
-        $decision = Resolve-VSBuildToolsInstallDecision -AlreadyValid:$false -PartialDetected:$PartialDetected -AssumeYesEnabled:$false -NonLiveMode:$false -UserChoice $answer
+        $decision = Resolve-VSBuildToolsInstallDecision -AlreadyValid:$false -PartialDetected:$PartialDetected -AssumeYesEnabled:$false -AssumeBuildToolsYesEnabled:$false -NonLiveMode:$false -UserChoice $answer
         if (-not [bool]$decision.ShouldPrompt) { return $decision }
         Write-Warning $decision.Reason
     }
@@ -5773,7 +5932,8 @@ function Install-VSBuildToolsPassive {
         return
     }
 
-    $decision = Resolve-VSBuildToolsInstallDecision -AlreadyValid:$false -PartialDetected:([bool]$validation.Partial) -AssumeYesEnabled:([bool]$AssumeYes) -NonLiveMode:(Test-NonLiveInstallerMode)
+    $nonLiveBuildToolsMode = ((Test-NonLiveInstallerMode) -or $DryRun -or $Script:HiddenDryRun -or $Script:VisualPreviewMode)
+    $decision = Resolve-VSBuildToolsInstallDecision -AlreadyValid:$false -PartialDetected:([bool]$validation.Partial) -AssumeYesEnabled:([bool]$AssumeYes) -AssumeBuildToolsYesEnabled:([bool]$AssumeBuildToolsYes) -NonLiveMode:$nonLiveBuildToolsMode
     if ([bool]$decision.ShouldPrompt) { $decision = Read-VSBuildToolsInstallDecision -PartialDetected:([bool]$validation.Partial) }
     if ([bool]$decision.Skipped) {
         Write-Host $decision.Reason -ForegroundColor DarkYellow
@@ -5969,15 +6129,40 @@ function Install-BaseTools {
     }
 
     Invoke-SetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
-        if (Get-Command git -ErrorAction SilentlyContinue) {
-            Write-Host "Git is already available. Validating and checking for WinGet updates." -ForegroundColor Green
-            Run-Native -Exe "git" -Arguments @("--version") -IgnoreExitCode
-            Update-WingetPackageIfInstalled -Id "Git.Git" | Out-Null
+        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+        if ($gitCmd) {
+            Write-Host "Git is already available. Running local health checks before repo work." -ForegroundColor Green
         } else {
             Install-WingetPackage -Id "Git.Git"
         }
+
         Add-UserPath "C:\Program Files\Git\cmd"
-        if (Get-Command git -ErrorAction SilentlyContinue) { Run-Native -Exe "git" -Arguments @("--version") -IgnoreExitCode }
+        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+        if (-not $gitCmd) {
+            $reason = "Git was not found after install/validation. Setup cannot reliably continue until Git works."
+            Set-ToolState -Name "git" -Status "Missing" -Reason $reason -InstallNeeded $true
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = $reason
+            return
+        }
+
+        $gitExe = if (-not [string]::IsNullOrWhiteSpace([string]$gitCmd.Source)) { [string]$gitCmd.Source } else { "git" }
+        $health = Invoke-GitHealthCheck -GitExe $gitExe -WorkRoot $AgentWorkRoot
+        if (-not [bool]$health.Ready) {
+            Write-Warning ([string]$health.Reason)
+            if (-not [string]::IsNullOrWhiteSpace([string]$health.OutputSummary)) {
+                Write-Warning ("Git health output: {0}" -f [string]$health.OutputSummary)
+            }
+            Set-ToolState -Name "git" -Status ([string]$health.Status) -Path $gitExe -Version ([string]$health.Version) -Source "local" -Reason ([string]$health.Reason) -LocalValidated $false
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = [string]$health.Reason
+            return
+        }
+
+        Write-Host "Git health checks passed." -ForegroundColor Green
+        if (-not [string]::IsNullOrWhiteSpace([string]$health.Version)) { Write-Host "  $($health.Version)" -ForegroundColor DarkGray }
+        Set-ToolState -Name "git" -Status "ValidLocal" -Path $gitExe -Version ([string]$health.Version) -Source "local" -Reason ([string]$health.Reason) -LocalValidated $true
+        Update-WingetPackageIfInstalled -Id "Git.Git" | Out-Null
     }
 
     Invoke-SetupStep -Id "install-gh" -Name "Install or validate GitHub CLI" -ScriptBlock {
@@ -8536,13 +8721,16 @@ function Invoke-SelfTest {
         Assert-SelfTest (-not [bool]$validDecision.ShouldPrompt -and -not [bool]$validDecision.ShouldInstall) "Valid Build Tools unexpectedly prompted or installed."
 
         $assumeYesDecision = Resolve-VSBuildToolsInstallDecision -AssumeYesEnabled $true
-        Assert-SelfTest ([string]$assumeYesDecision.Status -eq "Approved" -and [bool]$assumeYesDecision.ShouldInstall) "AssumeYes Build Tools decision did not approve install."
+        Assert-SelfTest ([string]$assumeYesDecision.Status -eq "PromptNeeded" -and [bool]$assumeYesDecision.ShouldPrompt -and -not [bool]$assumeYesDecision.ShouldInstall) "Generic AssumeYes incorrectly approved Build Tools install."
+
+        $assumeBuildToolsYesDecision = Resolve-VSBuildToolsInstallDecision -AssumeYesEnabled $true -AssumeBuildToolsYesEnabled $true
+        Assert-SelfTest ([string]$assumeBuildToolsYesDecision.Status -eq "Approved" -and [bool]$assumeBuildToolsYesDecision.ShouldInstall) "AssumeBuildToolsYes Build Tools decision did not approve install."
 
         $userNoDecision = Resolve-VSBuildToolsInstallDecision -UserChoice "N"
         Assert-SelfTest ([string]$userNoDecision.Status -eq "UserSkipped" -and [bool]$userNoDecision.Skipped) "User N Build Tools decision did not skip."
         Assert-SelfTest ([string]$userNoDecision.Reason -eq "Build Tools skipped by user choice.") "User N Build Tools decision reason was not explicit."
 
-        $nonLiveDecision = Resolve-VSBuildToolsInstallDecision -NonLiveMode $true -AssumeYesEnabled $true
+        $nonLiveDecision = Resolve-VSBuildToolsInstallDecision -NonLiveMode $true -AssumeYesEnabled $true -AssumeBuildToolsYesEnabled $true
         Assert-SelfTest ([string]$nonLiveDecision.Status -eq "NonLiveSkipped" -and -not [bool]$nonLiveDecision.ShouldInstall) "Non-live Build Tools decision did not block install."
 
         $promptDecision = Resolve-VSBuildToolsInstallDecision
@@ -8635,6 +8823,114 @@ function Invoke-SelfTest {
         $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
         $Script:CurrentStepResultStatus = ""
         $Script:CurrentStepResultReason = ""
+    }
+
+    try {
+        $oldSteps = $null
+        $oldLookup = $null
+        $oldTimings = $null
+        $oldSkips = $null
+        $oldFailures = $null
+        $oldToolStates = $null
+        $oldFatal = $false
+        $oldSetupStatePath = $null
+        $oldCurrentStepId = $null
+        $oldCurrentStepName = $null
+        $oldCurrentStepNumber = 0
+        $oldCurrentCompletedBefore = $false
+
+        $blockedOutput = Test-GitBlockedComponentOutput -OutputLines @(
+            "Part of this app has been blocked by Smart App Control.",
+            "msys-2.0.dll"
+        )
+        Assert-SelfTest ([bool]$blockedOutput.Blocked -and [string]$blockedOutput.Pattern -eq "Smart App Control") "Git Smart App Control output was not detected."
+
+        $badImageOutput = Test-GitBlockedComponentOutput -OutputLines @(
+            "Bad Image",
+            "libpcre2-8-0.dll is either not designed to run on Windows or contains an error.",
+            "error status 0xc0e90002"
+        )
+        Assert-SelfTest ([bool]$badImageOutput.Blocked) "Git blocked DLL/Bad Image output was not detected."
+
+        $cleanOutput = Test-GitBlockedComponentOutput -OutputLines @("git version 2.45.0.windows.1")
+        Assert-SelfTest (-not [bool]$cleanOutput.Blocked) "Clean Git version output was incorrectly detected as blocked."
+
+        $blockedHealth = New-GitHealthCheckResultFromCommandResults -CommandResults @(
+            [pscustomobject]@{ Command = "git --version"; ExitCode = 0; Output = @("git version 2.45.0.windows.1") },
+            [pscustomobject]@{ Command = "git status --short"; ExitCode = 1; Output = @("Bad Image", "libintl-8.dll contains an error", "error status 0xc0e90002") }
+        )
+        Assert-SelfTest ([string]$blockedHealth.Status -eq "Blocked" -and -not [bool]$blockedHealth.Ready) "Blocked Git health result did not report Blocked/not ready."
+        Assert-SelfTest ([string]$blockedHealth.Reason -match "Smart App Control|Windows Security|trust") "Blocked Git health reason did not explain security/trust guidance."
+
+        $cleanHealth = New-GitHealthCheckResultFromCommandResults -CommandResults @(
+            [pscustomobject]@{ Command = "git --version"; ExitCode = 0; Output = @("git version 2.45.0.windows.1") },
+            [pscustomobject]@{ Command = "git init --quiet"; ExitCode = 0; Output = @() },
+            [pscustomobject]@{ Command = "git status --short"; ExitCode = 0; Output = @() },
+            [pscustomobject]@{ Command = "git config --local --get core.repositoryformatversion"; ExitCode = 0; Output = @("0") }
+        )
+        Assert-SelfTest ([string]$cleanHealth.Status -eq "OK" -and [bool]$cleanHealth.Ready) "Clean Git health result did not report OK/ready."
+
+        $oldSteps = $Script:SetupSteps
+        $oldLookup = $Script:SetupStepLookup
+        $oldTimings = $Script:StepTimings
+        $oldSkips = $Script:SetupSkips
+        $oldFailures = $Script:SetupFailures
+        $oldToolStates = $Script:ToolStates
+        $oldFatal = $Script:FatalFailure
+        $oldSetupStatePath = $Script:SetupStatePath
+        $oldCurrentStepId = $Script:CurrentStepId
+        $oldCurrentStepName = $Script:CurrentStepName
+        $oldCurrentStepNumber = $Script:CurrentStepNumber
+        $oldCurrentCompletedBefore = $Script:CurrentCompletedBefore
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:ToolStates = @{}
+        $Script:FatalFailure = $false
+        $Script:SetupStatePath = Join-Path $Script:HarnessRoot "git-blocked-tests\setup-state.json"
+        $Script:SetupSteps = @(
+            (New-SetupStepObject -Id "install-git" -Name "Install or validate Git"),
+            (New-SetupStepObject -Id "clone-repos" -Name "Clone or validate tool repositories"),
+            (New-SetupStepObject -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches")
+        )
+        $Script:SetupStepLookup = @{}
+        for ($i = 0; $i -lt $Script:SetupSteps.Count; $i++) { $Script:SetupStepLookup[$Script:SetupSteps[$i].Id] = ($i + 1) }
+
+        Invoke-SetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
+            Set-ToolState -Name "git" -Status ([string]$blockedHealth.Status) -Source "harness" -Reason ([string]$blockedHealth.Reason) -LocalValidated $false
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = [string]$blockedHealth.Reason
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "install-git" -Status "FAILED") -eq 1) "Blocked Git install step was not recorded as FAILED."
+        Assert-SelfTest ((Get-SelfTestFailureCount -Id "install-git" -Reason ([string]$blockedHealth.Reason) -Fatal $false) -eq 1) "Blocked Git did not produce exactly one nonfatal failure record."
+
+        Invoke-SetupStep -Id "clone-repos" -Name "Clone or validate tool repositories" -ScriptBlock { throw "clone-repos should skip after blocked Git" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "clone-repos" -Status "SKIPPED") -eq 1) "Repo clone step did not skip after blocked Git."
+
+        Invoke-SetupStep -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches" -ScriptBlock { throw "setup-git-versioning should skip after blocked Git" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "setup-git-versioning" -Status "SKIPPED") -eq 1) "Git versioning step did not skip after blocked Git."
+
+        $state = Get-Content -LiteralPath $Script:SetupStatePath -Raw | ConvertFrom-Json
+        Assert-SelfTest (@($state.tools | Where-Object { [string]$_.name -eq "git" -and [string]$_.status -eq "Blocked" }).Count -eq 1) "Setup-state did not record blocked Git ToolState."
+    } catch { Add-SelfTestError "Git blocked-component health self-test failed: $($_.Exception.Message)" }
+    finally {
+        if ($null -ne $oldSteps) {
+            $Script:SetupSteps = $oldSteps
+            $Script:SetupStepLookup = $oldLookup
+            $Script:StepTimings = $oldTimings
+            $Script:SetupSkips = $oldSkips
+            $Script:SetupFailures = $oldFailures
+            $Script:ToolStates = $oldToolStates
+            $Script:FatalFailure = $oldFatal
+            $Script:SetupStatePath = $oldSetupStatePath
+            $Script:CurrentStepId = $oldCurrentStepId
+            $Script:CurrentStepName = $oldCurrentStepName
+            $Script:CurrentStepNumber = $oldCurrentStepNumber
+            $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
+            $Script:CurrentStepResultStatus = ""
+            $Script:CurrentStepResultReason = ""
+        }
     }
 
     try {
