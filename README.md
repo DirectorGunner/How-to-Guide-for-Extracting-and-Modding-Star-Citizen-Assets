@@ -49,6 +49,64 @@ The goal of this repo is to maintain an all-in-one workflow that brings together
 >
 > If you keep Smart App Control On or in Evaluation mode, Windows may block Git, Rust, or other developer tools and the setup cannot reliably continue.
 
+> [!IMPORTANT]
+>
+> ## Before launching the installer: Unblock it and run as Administrator
+>
+> Windows may mark downloaded `.cmd` files as coming from another computer. If the installer is blocked this way, Windows may prevent parts of the setup from running correctly.
+>
+> Before running the installer:
+>
+> 1. Right-click `Launch-SC-Zero-to-Hero-Setup.cmd`.
+>
+> 2. Choose **Properties**.
+>
+> 3. On the **General** tab, look near the bottom for:
+>
+>    `Security: This file came from another computer and might be blocked to help protect this computer.`
+>
+> 4. Check **Unblock**.
+>
+> 5. Click **Apply**, then **OK**.
+>
+> 6. Right-click the installer again and choose **Run as administrator**.
+>
+> If you do not see an **Unblock** checkbox, Windows has not marked the file that way and you can continue.
+>
+> This is separate from **Smart App Control**. You should still make sure **Smart App Control is Off** before installing developer tools.
+
+## Recommended one-click installer
+
+The recommended path is to run the guided installer:
+
+```text
+Launch-SC-Zero-to-Hero-Setup.cmd
+```
+
+Before running it:
+
+- Set **Windows Security > App & browser control > Smart App Control settings** to **Off**.
+- Right-click the `.cmd`, open **Properties**, and check **Unblock** if Windows shows it.
+- Right-click the `.cmd` again and choose **Run as administrator**.
+
+The installer asks where to create the dev environment. Common choices are:
+
+- `D:\dev`
+- `C:\dev`
+- a custom path you choose
+
+It creates the folder layout, validates or installs tools, clones the community repos, creates the VS Code workspace, sets up safe Git branches, generates support files, and writes logs/setup-state for troubleshooting.
+
+The installer is designed to be rerunnable. If it stops, crashes, repairs WinGet/App Installer, asks you to relaunch, or you skip a step, run the same CMD again. Completed steps are revalidated and skipped or reused where practical.
+
+For Visual Studio Build Tools, the installer validates first. If Build Tools are already installed and valid, it skips that step. If they are missing or invalid, it asks Y/N:
+
+- **Y** is recommended for a full setup.
+- **N** is useful for Windows Sandbox, quick validation, or a machine where you do not want Build Tools installed now.
+- If you choose **N**, StarBreaker build steps may skip unless existing binaries validate.
+
+Windows Sandbox is useful for checking the launch flow, root selection, Smart App Control standby behavior, Build Tools skip behavior, and logs. It is not proof that the full toolchain installs correctly. Visual Studio Build Tools can take too long or fail in Sandbox, and some Sandbox images may not have the Smart App Control settings UI or protocol handler available. If Smart App Control cannot be disabled inside Sandbox, do not use that Sandbox run for full tool-install validation.
+
 ## What this guide covers
 
 - Setting up a clean Windows 11 power-user development environment
@@ -76,6 +134,10 @@ This workflow builds on work from several community projects:
 Please support and credit the original tool authors.
 
 ## Table of contents
+
+- [Recommended one-click installer](#recommended-one-click-installer)
+- [Installer logs, setup-state, and reruns](#installer-logs-setup-state-and-reruns)
+- [Troubleshooting quick fixes](#troubleshooting-quick-fixes)
 
 1. [Install base tools](#1-install-base-tools)
 2. [Install Rust](#2-install-rust)
@@ -105,8 +167,11 @@ Please support and credit the original tool authors.
 D:\dev
 ├─ cmake
 ├─ dotnet
+├─ gh
 ├─ installers
 ├─ node
+│  ├─ npm-cache
+│  └─ npm-global
 ├─ python
 │  ├─ Python312
 │  ├─ pip-cache
@@ -118,18 +183,48 @@ D:\dev
 │  ├─ exports
 │  ├─ logs
 │  ├─ p4k
-│  │  └─ 4.4.1-LIVE-9457020\Data.p4k
+│  │  └─ <SC_BUILD>\Data.p4k
 │  └─ work
 └─ starcitizen
+   ├─ AGENTS.md
+   ├─ CLAUDE.md
+   ├─ Open-StarCitizen-Workspace.cmd
+   ├─ prompts
+   ├─ work
+   ├─ output
+   │  └─ reports
+   ├─ _workspace
+   │  └─ starcitizen-tools.code-workspace
+   ├─ How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets
    ├─ StarBreaker
    ├─ Blender-Tools
    ├─ unp4k
    ├─ Cryengine-Converter
    ├─ SCTextureConverter
-   └─ _workspace
+   ├─ scdatatools
+   └─ qtvscodestyle
 ```
 
 Replace paths as needed if you use a different drive or folder layout.
+
+`D:\dev\starcitizen\work` is for Codex/Claude/agent work logs, validation scratch, prompt/report support, and harness artifacts.
+
+`D:\dev\scdata\work` is for Star Citizen data/export/P4K/Blender workflow artifacts.
+
+## Installer logs, setup-state, and reruns
+
+The installer is designed to be rerunnable. Completed steps are revalidated and skipped or reused where practical.
+
+If setup crashes, is blocked by Windows Security, needs a relaunch, repairs WinGet/App Installer, or you intentionally skip a step, rerun the same installer CMD.
+
+Useful support files:
+
+- `<DevRoot>\scdata\logs`
+- `<DevRoot>\scdata\setup-state.json`
+- `<DevRoot>\starcitizen\output\reports`
+- `<DevRoot>\starcitizen\work`
+
+When asking for help, include the latest setup log, any relevant command log, `setup-state.json`, screenshots of errors, and the install root you selected.
 
 ## 1. Install base tools
 
@@ -211,10 +306,17 @@ where.exe gh
 gh --version
 ```
 
-If no issues, authenticate and check
+GitHub CLI authentication is optional for normal read-only public repo cloning. It is useful if you want to push changes, work with private repos, or use GitHub-authenticated workflows.
+
+If you want those authenticated workflows, run:
 
 ```powershell
 gh auth login --hostname github.com --git-protocol https --web
+```
+
+For normal public network connectivity, you can simply check:
+
+```powershell
 Test-NetConnection github.com -Port 443
 ```
 
@@ -406,6 +508,12 @@ deactivate
 ```powershell
 mkdir D:\dev\dotnet -Force
 mkdir D:\dev\cmake -Force
+mkdir D:\dev\starcitizen -Force
+mkdir D:\dev\starcitizen\prompts -Force
+mkdir D:\dev\starcitizen\work -Force
+mkdir D:\dev\starcitizen\output -Force
+mkdir D:\dev\starcitizen\output\reports -Force
+mkdir D:\dev\starcitizen\_workspace -Force
 mkdir D:\dev\scdata -Force
 mkdir D:\dev\scdata\p4k -Force
 mkdir D:\dev\scdata\exports -Force
@@ -499,6 +607,7 @@ Regular PowerShell is fine for this step.
 mkdir D:\dev\starcitizen
 cd D:\dev\starcitizen
 
+git clone https://github.com/DirectorGunner/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets.git
 git clone https://github.com/diogotr7/StarBreaker.git
 git clone https://github.com/scorg-tools/Blender-Tools.git
 git clone https://github.com/dolkensp/unp4k.git
@@ -642,11 +751,16 @@ Paste this workspace JSON, adjusting paths if needed:
 ```json
 {
   "folders": [
+    { "name": "Star Citizen Workspace Control", "path": "D:/dev/starcitizen" },
+    { "name": "Prompt Archive", "path": "D:/dev/starcitizen/prompts" },
+    { "name": "Agent Work Logs", "path": "D:/dev/starcitizen/work" },
+    { "name": "Output Reports", "path": "D:/dev/starcitizen/output/reports" },
     { "name": "StarBreaker", "path": "D:/dev/starcitizen/StarBreaker" },
     { "name": "Blender-Tools", "path": "D:/dev/starcitizen/Blender-Tools" },
     { "name": "unp4k", "path": "D:/dev/starcitizen/unp4k" },
     { "name": "Cryengine-Converter", "path": "D:/dev/starcitizen/Cryengine-Converter" },
     { "name": "SCTextureConverter", "path": "D:/dev/starcitizen/SCTextureConverter" },
+    { "name": "Zero to Hero Guide", "path": "D:/dev/starcitizen/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets" },
     { "name": "scdatatools", "path": "D:/dev/starcitizen/scdatatools" },
     { "name": "qtvscodestyle", "path": "D:/dev/starcitizen/qtvscodestyle" },
     { "name": "scdata", "path": "D:/dev/scdata" }
@@ -670,10 +784,16 @@ Paste this workspace JSON, adjusting paths if needed:
     },
     "terminal.integrated.env.windows": {
       "SC_DEV_ROOT": "D:/dev",
+      "SC_STAR_CITIZEN_ROOT": "D:/dev/starcitizen",
       "SC_DATA_ROOT": "D:/dev/scdata",
       "SC_P4K_ROOT": "D:/dev/scdata/p4k",
       "SC_EXPORT_ROOT": "D:/dev/scdata/exports",
-      "SC_WORK_ROOT": "D:/dev/scdata/work"
+      "SC_WORK_ROOT": "D:/dev/scdata/work",
+      "SC_PROMPTS_ROOT": "D:/dev/starcitizen/prompts",
+      "SC_AGENT_WORK_ROOT": "D:/dev/starcitizen/work",
+      "SC_REPORTS_ROOT": "D:/dev/starcitizen/output/reports",
+      "SC_WORKSPACE_PATH": "D:/dev/starcitizen/_workspace/starcitizen-tools.code-workspace",
+      "SC_GUIDE_REPO": "D:/dev/starcitizen/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets"
     },
     "python.defaultInterpreterPath": "D:/dev/python/venvs/scdev/Scripts/python.exe",
     "files.exclude": {
@@ -691,6 +811,14 @@ Open the workspace:
 ```powershell
 code D:\dev\starcitizen\_workspace\starcitizen-tools.code-workspace
 ```
+
+The installer also creates:
+
+```text
+D:\dev\starcitizen\Open-StarCitizen-Workspace.cmd
+```
+
+You can run that launcher to open the generated VS Code workspace.
 
 ## 12. Create safe development branches
 
@@ -716,6 +844,10 @@ git checkout -b dev-sc-asset-pipeline
 cd D:\dev\starcitizen\SCTextureConverter
 git status
 git checkout -b dev-sc-texture-pipeline
+
+cd D:\dev\starcitizen\How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets
+git status
+git checkout -b dev-guide-improvements
 ```
 
 If you have private/offline StarFab-related source folders, copy them to:
@@ -735,7 +867,29 @@ git init
 git config user.name "Local Developer"
 git config user.email "local@example.invalid"
 git checkout -b local-private-baseline
-"__pycache__/", "*.pyc", "*.pyo", "*.pyd", ".venv/", "venv/", ".env", "*.log", ".DS_Store", "Thumbs.db", ".vscode/", ".idea/" | Set-Content -Encoding utf8 .gitignore
+notepad .gitignore
+```
+
+Paste this into `.gitignore` before `git add .`:
+
+```gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+```
+
+Then continue:
+
+```powershell
 git add .
 git commit -m "Local private baseline import"
 git checkout -b dev-private-review
@@ -750,7 +904,29 @@ git init
 git config user.name "Local Developer"
 git config user.email "local@example.invalid"
 git checkout -b local-private-baseline
-"__pycache__/", "*.pyc", "*.pyo", "*.pyd", ".venv/", "venv/", ".env", "*.log", ".DS_Store", "Thumbs.db", ".vscode/", ".idea/" | Set-Content -Encoding utf8 .gitignore
+notepad .gitignore
+```
+
+Paste this into `.gitignore` before `git add .`:
+
+```gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+```
+
+Then continue:
+
+```powershell
 git add .
 git commit -m "Local private baseline import"
 git checkout -b dev-private-review
@@ -767,6 +943,7 @@ cd D:\dev\starcitizen\Blender-Tools; git status; git branch --show-current
 cd D:\dev\starcitizen\unp4k; git status; git branch --show-current
 cd D:\dev\starcitizen\Cryengine-Converter; git status; git branch --show-current
 cd D:\dev\starcitizen\SCTextureConverter; git status; git branch --show-current
+cd D:\dev\starcitizen\How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets; git status; git branch --show-current
 cd D:\dev\starcitizen\scdatatools; git status; git branch --show-current
 cd D:\dev\starcitizen\qtvscodestyle; git status; git branch --show-current
 ```
@@ -779,6 +956,8 @@ Blender-Tools          dev-direct-p4k-workflow
 unp4k                  dev-direct-p4k-workflow
 Cryengine-Converter    dev-sc-asset-pipeline
 SCTextureConverter     dev-sc-texture-pipeline
+How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets
+                       dev-guide-improvements
 scdatatools            dev-private-review
 qtvscodestyle          dev-private-review
 ```
@@ -794,9 +973,17 @@ code D:\dev\starcitizen\_workspace\starcitizen-tools.code-workspace
 In the VS Code terminal, verify:
 
 ```powershell
+echo $env:SC_DEV_ROOT
+echo $env:SC_STAR_CITIZEN_ROOT
+echo $env:SC_DATA_ROOT
 echo $env:SC_P4K_ROOT
 echo $env:SC_EXPORT_ROOT
 echo $env:SC_WORK_ROOT
+echo $env:SC_PROMPTS_ROOT
+echo $env:SC_AGENT_WORK_ROOT
+echo $env:SC_REPORTS_ROOT
+echo $env:SC_WORKSPACE_PATH
+echo $env:SC_GUIDE_REPO
 cl
 where.exe cl
 where.exe link
@@ -844,13 +1031,21 @@ Test MCP:
 Copy your `Data.p4k` into a versioned folder, for example:
 
 ```text
-D:\dev\scdata\p4k\4.4.1-LIVE-9457020\Data.p4k
+D:\dev\scdata\p4k\<SC_BUILD>\Data.p4k
+```
+
+Example build label:
+
+```text
+4.8-LIVE-xxxxxxx
 ```
 
 Set it for the current terminal session:
 
 ```powershell
-$env:SC_BUILD = "4.4.1-LIVE-9457020"
+$env:SC_BUILD = "<SC_BUILD>"
+# Example only:
+# $env:SC_BUILD = "4.8-LIVE-xxxxxxx"
 $env:SC_DATA_P4K = Join-Path $env:SC_P4K_ROOT "$env:SC_BUILD\Data.p4k"
 echo $env:SC_DATA_P4K
 Test-Path $env:SC_DATA_P4K
@@ -887,8 +1082,8 @@ Search for Aurora paths:
 Because the list may be long, save it:
 
 ```powershell
-.\target\release\starbreaker.exe p4k list --filter 'Data/Objects/Spaceships/Ships/RSI/**' | Select-String -Pattern 'Aurora' -CaseSensitive:$false | Out-File -Encoding utf8 "D:\dev\scdata\work\aurora_rsi_ship_paths_4.4.1-LIVE-9457020.txt"
-notepad "D:\dev\scdata\work\aurora_rsi_ship_paths_4.4.1-LIVE-9457020.txt"
+.\target\release\starbreaker.exe p4k list --filter 'Data/Objects/Spaceships/Ships/RSI/**' | Select-String -Pattern 'Aurora' -CaseSensitive:$false | Out-File -Encoding utf8 "D:\dev\scdata\work\aurora_rsi_ship_paths_$env:SC_BUILD.txt"
+notepad "D:\dev\scdata\work\aurora_rsi_ship_paths_$env:SC_BUILD.txt"
 ```
 
 ## 17. Resolve and export an Aurora MR example
@@ -896,25 +1091,25 @@ notepad "D:\dev\scdata\work\aurora_rsi_ship_paths_4.4.1-LIVE-9457020.txt"
 Resolve the generic Aurora entity:
 
 ```powershell
-.\target\release\starbreaker.exe entity loadout RSI_Aurora --p4k "$env:SC_DATA_P4K" *> "D:\dev\scdata\work\loadout_RSI_Aurora_4.4.1-LIVE-9457020.txt"
+.\target\release\starbreaker.exe entity loadout RSI_Aurora --p4k "$env:SC_DATA_P4K" *> "D:\dev\scdata\work\loadout_RSI_Aurora_$env:SC_BUILD.txt"
 ```
 
 Resolve the MR variant:
 
 ```powershell
-.\target\release\starbreaker.exe entity loadout RSI_Aurora_MR --p4k "$env:SC_DATA_P4K" *> "D:\dev\scdata\work\loadout_RSI_Aurora_MR_4.4.1-LIVE-9457020.txt"
+.\target\release\starbreaker.exe entity loadout RSI_Aurora_MR --p4k "$env:SC_DATA_P4K" *> "D:\dev\scdata\work\loadout_RSI_Aurora_MR_$env:SC_BUILD.txt"
 ```
 
 Export the Aurora MR as a decomposed package:
 
 ```powershell
-.\target\release\starbreaker.exe entity export RSI_Aurora_MR D:\dev\scdata\exports\aurora_mr_decomposed --p4k "$env:SC_DATA_P4K" --kind decomposed --materials textures --lod 1 --mip 2 *> "D:\dev\scdata\work\export_RSI_Aurora_MR_decomposed_4.4.1-LIVE-9457020.txt"
+.\target\release\starbreaker.exe entity export RSI_Aurora_MR D:\dev\scdata\exports\aurora_mr_decomposed --p4k "$env:SC_DATA_P4K" --kind decomposed --materials textures --lod 1 --mip 2 *> "D:\dev\scdata\work\export_RSI_Aurora_MR_decomposed_$env:SC_BUILD.txt"
 ```
 
 Create a file-tree log:
 
 ```powershell
-Get-ChildItem "D:\dev\scdata\exports\aurora_mr_decomposed" -Recurse | Select-Object FullName, Length | Out-File -Encoding utf8 "D:\dev\scdata\work\export_RSI_Aurora_MR_decomposed_filetree_4.4.1-LIVE-9457020.txt"
+Get-ChildItem "D:\dev\scdata\exports\aurora_mr_decomposed" -Recurse | Select-Object FullName, Length | Out-File -Encoding utf8 "D:\dev\scdata\work\export_RSI_Aurora_MR_decomposed_filetree_$env:SC_BUILD.txt"
 ```
 
 Logs are saved in:
@@ -967,6 +1162,16 @@ After import:
 4. Click **Last**.
 
 The landing gear should retract if the matching animation data was exported and applied successfully.
+
+## Troubleshooting quick fixes
+
+- **Smart App Control blocks Git, Rust, or DLLs**: set Smart App Control to **Off** in Windows Security, then rerun the installer. Common clues include `msys-2.0.dll`, `libintl-8.dll`, `libpcre2-8-0.dll`, `rustup-init.exe`, `Bad Image`, or `0xc0e90002`.
+- **Installer closes after WinGet/App Installer repair**: reopen the same `Launch-SC-Zero-to-Hero-Setup.cmd`. The repaired App Installer/WinGet state is rechecked on the next run.
+- **Build Tools were skipped**: this is not fatal. Existing StarBreaker binaries can still be reused if they validate; otherwise build-dependent steps will skip until Build Tools are installed.
+- **Git is installed but clone/versioning fails**: reopen the terminal, check `git --version`, and review whether Windows Security blocked Git for Windows components.
+- **Python opens Microsoft Store**: disable the `python.exe` and `python3.exe` App Installer aliases under **Settings > Apps > Advanced app settings > App execution aliases**.
+- **VS Code `code` command not found**: add the VS Code `bin` folder to `Path`, reopen PowerShell, then run `where.exe code`.
+- **Rerun after crash or partial setup**: run the same installer again. It revalidates completed steps and keeps useful details in `setup-state.json` and logs.
 
 ## 20. More to be added at a later date
 
