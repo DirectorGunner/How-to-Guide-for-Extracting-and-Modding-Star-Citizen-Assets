@@ -89,6 +89,8 @@ Before running it:
 - Right-click the `.cmd`, open **Properties**, and check **Unblock** if Windows shows it.
 - Right-click the `.cmd` again and choose **Run as administrator**.
 
+The launcher plays a scene-release-style music track by default on the first prompt. Press **M** at that first prompt to mute or unmute. Music stops before setup begins and does not play during tool installation. Set `SC_ZERO_TO_HERO_MUSIC=0` before launching if you want music disabled from the start.
+
 The installer asks where to create the dev environment. Common choices are:
 
 - `D:\dev`
@@ -120,7 +122,7 @@ If you test Git repos in Sandbox, do **not** map the entire DevRoot as `C:\dev`.
 - Exploring `Data.p4k` directly
 - Resolving ship entities and loadouts
 - Exporting a decomposed StarBreaker package
-- Importing that package into Blender with the StarBreaker add-on
+- Opening that package in Blender with the StarBreaker add-on
 - Using the Aurora MR as a practical end-to-end example
 
 ## Community tools used
@@ -161,6 +163,7 @@ Please support and credit the original tool authors.
 17. [Resolve and export an Aurora MR example](#17-resolve-and-export-an-aurora-mr-example)
 18. [Install the StarBreaker Blender add-on](#18-install-the-starbreaker-blender-add-on)
 19. [Open the decomposed package in Blender](#19-open-the-decomposed-package-in-blender)
+20. [AI-assisted setup and future MCP support](#20-ai-assisted-setup-and-future-mcp-support)
 41. [A little bit of history behind this tutorial](#41-a-little-bit-of-history-behind-this-tutorial)
 42. [New to Star Citizen?](#42-new-to-star-citizen)
 
