@@ -9,7 +9,7 @@ set "DG_LAUNCHER_DIR=%~dp0"
 set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
-set "DG_SCRIPT_VERSION=v0.41"
+set "DG_SCRIPT_VERSION=v0.42"
 set "DG_SCRIPT_BUILD=%DG_SCRIPT_VERSION%"
 set "DG_VERSION=%DG_SCRIPT_VERSION%"
 set "DG_STAR_CITIZEN_TESTED_BUILDS=LIVE-4.8-and-older"
@@ -956,7 +956,7 @@ $GuideRepoUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-a
 $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
-$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.41" }
+$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.42" }
 $testedBuildsFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_TESTED_BUILDS)) { [string]$env:DG_STAR_CITIZEN_TESTED_BUILDS } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { [string]$env:DG_STAR_CITIZEN_COMPAT } else { "LIVE-4.8-and-older" }
 $Script:ScriptVersion = $scriptVersionFromEnv
 $Script:InternalBuildVersion = $Script:ScriptVersion
@@ -1039,9 +1039,15 @@ $Script:SmartAppControlToolInstallsSkipped = $false
 $Script:OrchestrationRepoPath = ""
 $Script:BlenderState = [ordered]@{ status = "NotStarted"; exe = ""; version = ""; installRoot = ""; userConfigRoot = ""; addonLinked = $false; addonLinkType = "" }
 $Script:AuroraImportState = [ordered]@{
-    status = "NotStarted"; reason = ""; sceneJson = ""; packageRoot = ""; helperLog = ""; stdoutLog = ""; stderrLog = ""
+    status = "NotStarted"; reason = ""; sceneJson = ""; sceneBlend = ""; packageRoot = ""; helperLog = ""; stdoutLog = ""; stderrLog = ""; launcherPath = ""
     objectCount = 0; meshObjectCount = 0; nonzeroUsedMeshDatablockCount = 0; collectionInstanceCount = 0; actionCount = 0; linkedLibraryCount = 0
     missingAssetCount = 0; meshAssetReferenceCount = 0; existingMeshAssetCount = 0; suspiciousZstdBlendCount = 0
+    materialCount = 0; imageCount = 0; imageTextureNodeCount = 0; fileBackedImageCount = 0; missingFileBackedImageCount = 0; missingImagePaths = @()
+    animationEntryCount = 0; animationSidecarCount = 0; missingAnimationSidecarCount = 0
+    geometryStatus = ""; materialsStatus = ""; addonStatus = ""; animationMetadataStatus = ""; animationControlsStatus = ""
+    pomDetailStatus = ""; pomDetailReason = ""; pomDetailPropertyPath = ""; viewportRenderedStatus = ""; refreshMaterialsStatus = ""; refreshMaterialsReason = ""
+    starbreakerPanelRegistered = $false; animationOperatorPollBefore = ""; animationOperatorPollAfter = ""
+    validationMode = ""; sceneBlendValidationPrimary = $false; runtimeSceneJsonImportUsed = $false
     errors = @()
 }
 $Script:P4KState = [ordered]@{ status = "NotStarted"; build = ""; source = ""; destination = ""; partialDestination = ""; sizeBytes = 0; spaceWarning = $false; readOnly = $false; skippedReason = ""; channel = ""; starCitizenExe = ""; productVersion = ""; fileVersion = "" }
@@ -1977,10 +1983,12 @@ function Save-SetupState {
                 status = [string]$Script:AuroraImportState.status
                 reason = [string]$Script:AuroraImportState.reason
                 sceneJson = [string]$Script:AuroraImportState.sceneJson
+                sceneBlend = [string]$Script:AuroraImportState.sceneBlend
                 packageRoot = [string]$Script:AuroraImportState.packageRoot
                 helperLog = [string]$Script:AuroraImportState.helperLog
                 stdoutLog = [string]$Script:AuroraImportState.stdoutLog
                 stderrLog = [string]$Script:AuroraImportState.stderrLog
+                launcherPath = [string]$Script:AuroraImportState.launcherPath
                 objectCount = [int](Get-SafeInt64Value $Script:AuroraImportState.objectCount)
                 meshObjectCount = [int](Get-SafeInt64Value $Script:AuroraImportState.meshObjectCount)
                 nonzeroUsedMeshDatablockCount = [int](Get-SafeInt64Value $Script:AuroraImportState.nonzeroUsedMeshDatablockCount)
@@ -1991,6 +1999,32 @@ function Save-SetupState {
                 meshAssetReferenceCount = [int](Get-SafeInt64Value $Script:AuroraImportState.meshAssetReferenceCount)
                 existingMeshAssetCount = [int](Get-SafeInt64Value $Script:AuroraImportState.existingMeshAssetCount)
                 suspiciousZstdBlendCount = [int](Get-SafeInt64Value $Script:AuroraImportState.suspiciousZstdBlendCount)
+                materialCount = [int](Get-SafeInt64Value $Script:AuroraImportState.materialCount)
+                imageCount = [int](Get-SafeInt64Value $Script:AuroraImportState.imageCount)
+                imageTextureNodeCount = [int](Get-SafeInt64Value $Script:AuroraImportState.imageTextureNodeCount)
+                fileBackedImageCount = [int](Get-SafeInt64Value $Script:AuroraImportState.fileBackedImageCount)
+                missingFileBackedImageCount = [int](Get-SafeInt64Value $Script:AuroraImportState.missingFileBackedImageCount)
+                missingImagePaths = @($Script:AuroraImportState.missingImagePaths)
+                animationEntryCount = [int](Get-SafeInt64Value $Script:AuroraImportState.animationEntryCount)
+                animationSidecarCount = [int](Get-SafeInt64Value $Script:AuroraImportState.animationSidecarCount)
+                missingAnimationSidecarCount = [int](Get-SafeInt64Value $Script:AuroraImportState.missingAnimationSidecarCount)
+                geometryStatus = [string]$Script:AuroraImportState.geometryStatus
+                materialsStatus = [string]$Script:AuroraImportState.materialsStatus
+                addonStatus = [string]$Script:AuroraImportState.addonStatus
+                animationMetadataStatus = [string]$Script:AuroraImportState.animationMetadataStatus
+                animationControlsStatus = [string]$Script:AuroraImportState.animationControlsStatus
+                pomDetailStatus = [string]$Script:AuroraImportState.pomDetailStatus
+                pomDetailReason = [string]$Script:AuroraImportState.pomDetailReason
+                pomDetailPropertyPath = [string]$Script:AuroraImportState.pomDetailPropertyPath
+                viewportRenderedStatus = [string]$Script:AuroraImportState.viewportRenderedStatus
+                refreshMaterialsStatus = [string]$Script:AuroraImportState.refreshMaterialsStatus
+                refreshMaterialsReason = [string]$Script:AuroraImportState.refreshMaterialsReason
+                starbreakerPanelRegistered = [bool]$Script:AuroraImportState.starbreakerPanelRegistered
+                animationOperatorPollBefore = [string]$Script:AuroraImportState.animationOperatorPollBefore
+                animationOperatorPollAfter = [string]$Script:AuroraImportState.animationOperatorPollAfter
+                validationMode = [string]$Script:AuroraImportState.validationMode
+                sceneBlendValidationPrimary = [bool]$Script:AuroraImportState.sceneBlendValidationPrimary
+                runtimeSceneJsonImportUsed = [bool]$Script:AuroraImportState.runtimeSceneJsonImportUsed
                 errors = @($Script:AuroraImportState.errors)
             }
             p4k = [ordered]@{
@@ -2538,7 +2572,7 @@ function Invoke-ProgressTransitionHold {
 function Test-StepCacheMarkerAllowed {
     param([string]$StepId)
     if ([string]$StepId -eq "aurora-example") {
-        return ([string]$Script:AuroraImportState.status -eq "OK")
+        return (([string]$Script:AuroraImportState.status -eq "OK") -and ([string]$Script:AuroraImportState.geometryStatus -eq "OK") -and [bool]$Script:AuroraImportState.sceneBlendValidationPrimary)
     }
     return $true
 }
@@ -4819,7 +4853,7 @@ function Show-RerunDiagnostics {
         }
         $auroraMarker = Join-Path $SetupCacheRoot "aurora-example.ok"
         if (Test-Path -LiteralPath $auroraMarker) {
-            [void]$weak.Add("aurora-example:old OK marker will be ignored unless the new Blender mesh validation passes")
+            [void]$weak.Add("aurora-example:old OK marker will be ignored unless the new scene.blend geometry validation passes")
         }
         if ($weak.Count -gt 0) {
             Write-Host "Rerun diagnostics: previous weak/failed/skipped states detected:" -ForegroundColor Yellow
@@ -8282,6 +8316,26 @@ function Find-AuroraExportSceneJson {
     return ""
 }
 
+function Find-AuroraExportSceneBlend {
+    param(
+        [Parameter(Mandatory=$true)][string]$ExportDir,
+        [string]$SceneJson = ""
+    )
+    if (-not [string]::IsNullOrWhiteSpace($SceneJson) -and (Test-Path -LiteralPath $SceneJson)) {
+        $samePackage = Join-Path (Split-Path $SceneJson -Parent) "scene.blend"
+        if (Test-Path -LiteralPath $samePackage) { return $samePackage }
+    }
+    if (-not (Test-Path -LiteralPath $ExportDir)) { return "" }
+    $preferred = Join-Path $ExportDir "Packages\RSI Aurora MR_LOD1_TEX2\scene.blend"
+    if (Test-Path -LiteralPath $preferred) { return $preferred }
+    $candidates = @(Get-ChildItem -LiteralPath $ExportDir -Recurse -Filter scene.blend -ErrorAction SilentlyContinue | Sort-Object FullName)
+    foreach ($c in $candidates) {
+        if ($c.FullName -match '(?i)Aurora.*MR|RSI.*Aurora') { return $c.FullName }
+    }
+    if ($candidates.Count -gt 0) { return $candidates[0].FullName }
+    return ""
+}
+
 function Get-AuroraMeshAssetSummary {
     param([string]$SceneJson)
     $summary = [ordered]@{ meshAssetReferenceCount = 0; existingMeshAssetCount = 0; suspiciousZstdBlendCount = 0; errors = @() }
@@ -8340,6 +8394,7 @@ function Test-AuroraImportCatastrophicText {
 function New-AuroraImportAuditResult {
     param(
         [string]$SceneJson = "",
+        [string]$SceneBlend = "",
         [string]$PackageRoot = "",
         [int]$ObjectCount = 0,
         [int]$MeshObjectCount = 0,
@@ -8351,34 +8406,82 @@ function New-AuroraImportAuditResult {
         [int]$MeshAssetReferenceCount = 0,
         [int]$ExistingMeshAssetCount = 0,
         [int]$SuspiciousZstdBlendCount = 0,
+        [int]$MaterialCount = 0,
+        [int]$ImageCount = 0,
+        [int]$ImageTextureNodeCount = 0,
+        [int]$FileBackedImageCount = 0,
+        [int]$MissingFileBackedImageCount = 0,
+        [string[]]$MissingImagePaths = @(),
+        [int]$AnimationEntryCount = 0,
+        [int]$AnimationSidecarCount = 0,
+        [int]$MissingAnimationSidecarCount = 0,
+        [string]$GeometryStatus = "",
+        [string]$MaterialsStatus = "",
+        [string]$AddonStatus = "",
+        [string]$AnimationMetadataStatus = "",
+        [string]$AnimationControlsStatus = "",
+        [string]$PomDetailStatus = "",
+        [string]$PomDetailReason = "",
+        [string]$PomDetailPropertyPath = "",
+        [string]$ViewportRenderedStatus = "",
+        [string]$RefreshMaterialsStatus = "",
+        [string]$RefreshMaterialsReason = "",
+        [bool]$StarBreakerPanelRegistered = $false,
+        [string]$AnimationOperatorPollBefore = "",
+        [string]$AnimationOperatorPollAfter = "",
+        [string]$ValidationMode = "",
+        [bool]$SceneBlendValidationPrimary = $false,
+        [bool]$RuntimeSceneJsonImportUsed = $false,
         [string[]]$Errors = @()
     )
     $hasPackageRoot = -not [string]::IsNullOrWhiteSpace($PackageRoot)
     $hasUsableGeometry = (($MeshObjectCount -gt 0) -or ($NonzeroUsedMeshDatablockCount -gt 0) -or ($CollectionInstanceCount -gt 0 -and $LinkedLibraryCount -gt 0))
     $catastrophicText = Test-AuroraImportCatastrophicText -Lines $Errors
+    $geometryVerdict = if ([string]::IsNullOrWhiteSpace($GeometryStatus)) { if ($hasUsableGeometry -and $hasPackageRoot) { "OK" } else { "FAILED" } } else { $GeometryStatus.ToUpperInvariant() }
+    $materialsVerdict = if ([string]::IsNullOrWhiteSpace($MaterialsStatus)) { if ($MissingFileBackedImageCount -gt 0) { "WARN" } else { "OK" } } else { $MaterialsStatus.ToUpperInvariant() }
+    $addonVerdict = if ([string]::IsNullOrWhiteSpace($AddonStatus)) { "WARN" } else { $AddonStatus.ToUpperInvariant() }
+    $animationMetadataVerdict = if ([string]::IsNullOrWhiteSpace($AnimationMetadataStatus)) { if ($AnimationSidecarCount -gt 0) { "OK" } else { "WARN" } } else { $AnimationMetadataStatus.ToUpperInvariant() }
+    $animationControlsVerdict = if ([string]::IsNullOrWhiteSpace($AnimationControlsStatus)) { if ([string]$AnimationOperatorPollAfter -eq "True") { "OK" } else { "WARN" } } else { $AnimationControlsStatus.ToUpperInvariant() }
     $status = "OK"
-    $reason = "Blender import produced usable geometry."
-    if (-not (Test-Path -LiteralPath $SceneJson)) {
+    $reason = "Blender scene.blend validation produced usable geometry."
+    if ([string]::IsNullOrWhiteSpace($SceneBlend) -or -not (Test-Path -LiteralPath $SceneBlend)) {
+        $status = "FAILED"; $reason = "Aurora scene.blend was missing after export."
+        $geometryVerdict = "FAILED"
+    } elseif ([string]::IsNullOrWhiteSpace($SceneJson) -or -not (Test-Path -LiteralPath $SceneJson)) {
         $status = "FAILED"; $reason = "Aurora scene.json was missing after export."
     } elseif (-not $hasPackageRoot) {
-        $status = "FAILED"; $reason = "Blender import did not return or find a StarBreaker package root."
+        $status = "FAILED"; $reason = "Blender scene.blend validation did not find a StarBreaker package root."
+        $geometryVerdict = "FAILED"
     } elseif (-not $hasUsableGeometry) {
-        $status = "FAILED"; $reason = "Blender import returned a package root but no usable mesh objects were imported. Mesh files may be compressed or incompatible with the add-on import path."
+        $status = "FAILED"; $reason = "Blender scene.blend validation found no usable mesh objects or used mesh datablocks."
+        $geometryVerdict = "FAILED"
     } elseif ($catastrophicText) {
         $status = "FAILED"; $reason = "Blender import log contains catastrophic import errors."
     } elseif (($ExistingMeshAssetCount -gt 0) -and ($MissingAssetCount -ge $ExistingMeshAssetCount) -and ($MissingAssetCount -gt 5)) {
         $status = "FAILED"; $reason = "Blender import created broad missing-asset placeholders for mesh assets that exist on disk."
-    } elseif ($SuspiciousZstdBlendCount -gt 0) {
-        $status = "FAILED"; $reason = "Exported mesh assets use .blend names but contain Zstandard-compressed bytes."
+    } elseif ($addonVerdict -eq "FAILED") {
+        $status = "FAILED"; $reason = "StarBreaker add-on was not available during scene.blend validation."
     } elseif ($MissingAssetCount -gt 0) {
-        $status = "WARN"; $reason = "Blender import produced geometry but some StarBreaker assets were marked missing."
+        $reason = "Blender scene.blend validation produced geometry; some alternate-path asset placeholders were also detected."
+    } elseif ($materialsVerdict -eq "WARN" -or $animationMetadataVerdict -eq "WARN" -or $animationControlsVerdict -eq "WARN") {
+        $reason = "Blender scene.blend visual geometry validated; material or animation context warnings were recorded separately."
     }
     return [pscustomobject]@{
-        Status = $status; Reason = $reason; SceneJson = $SceneJson; PackageRoot = $PackageRoot
+        Status = $status; Reason = $reason; SceneJson = $SceneJson; SceneBlend = $SceneBlend; PackageRoot = $PackageRoot
         ObjectCount = $ObjectCount; MeshObjectCount = $MeshObjectCount; NonzeroUsedMeshDatablockCount = $NonzeroUsedMeshDatablockCount
         CollectionInstanceCount = $CollectionInstanceCount; ActionCount = $ActionCount; LinkedLibraryCount = $LinkedLibraryCount
         MissingAssetCount = $MissingAssetCount; MeshAssetReferenceCount = $MeshAssetReferenceCount; ExistingMeshAssetCount = $ExistingMeshAssetCount
-        SuspiciousZstdBlendCount = $SuspiciousZstdBlendCount; Errors = @($Errors)
+        SuspiciousZstdBlendCount = $SuspiciousZstdBlendCount
+        MaterialCount = $MaterialCount; ImageCount = $ImageCount; ImageTextureNodeCount = $ImageTextureNodeCount; FileBackedImageCount = $FileBackedImageCount
+        MissingFileBackedImageCount = $MissingFileBackedImageCount; MissingImagePaths = @($MissingImagePaths)
+        AnimationEntryCount = $AnimationEntryCount; AnimationSidecarCount = $AnimationSidecarCount; MissingAnimationSidecarCount = $MissingAnimationSidecarCount
+        GeometryStatus = $geometryVerdict; MaterialsStatus = $materialsVerdict; AddonStatus = $addonVerdict
+        AnimationMetadataStatus = $animationMetadataVerdict; AnimationControlsStatus = $animationControlsVerdict
+        PomDetailStatus = $PomDetailStatus; PomDetailReason = $PomDetailReason; PomDetailPropertyPath = $PomDetailPropertyPath
+        ViewportRenderedStatus = $ViewportRenderedStatus; RefreshMaterialsStatus = $RefreshMaterialsStatus; RefreshMaterialsReason = $RefreshMaterialsReason
+        StarBreakerPanelRegistered = $StarBreakerPanelRegistered; AnimationOperatorPollBefore = $AnimationOperatorPollBefore; AnimationOperatorPollAfter = $AnimationOperatorPollAfter
+        ValidationMode = $ValidationMode; SceneBlendValidationPrimary = $SceneBlendValidationPrimary; RuntimeSceneJsonImportUsed = $RuntimeSceneJsonImportUsed
+        Errors = @($Errors)
     }
 }
 
@@ -8387,6 +8490,7 @@ function Set-AuroraImportStateFromAudit {
     $Script:AuroraImportState.status = [string]$Audit.Status
     $Script:AuroraImportState.reason = [string]$Audit.Reason
     $Script:AuroraImportState.sceneJson = [string]$Audit.SceneJson
+    $Script:AuroraImportState.sceneBlend = [string]$Audit.SceneBlend
     $Script:AuroraImportState.packageRoot = [string]$Audit.PackageRoot
     $Script:AuroraImportState.helperLog = $HelperLog
     $Script:AuroraImportState.stdoutLog = $StdoutLog
@@ -8401,6 +8505,32 @@ function Set-AuroraImportStateFromAudit {
     $Script:AuroraImportState.meshAssetReferenceCount = [int]$Audit.MeshAssetReferenceCount
     $Script:AuroraImportState.existingMeshAssetCount = [int]$Audit.ExistingMeshAssetCount
     $Script:AuroraImportState.suspiciousZstdBlendCount = [int]$Audit.SuspiciousZstdBlendCount
+    $Script:AuroraImportState.materialCount = [int]$Audit.MaterialCount
+    $Script:AuroraImportState.imageCount = [int]$Audit.ImageCount
+    $Script:AuroraImportState.imageTextureNodeCount = [int]$Audit.ImageTextureNodeCount
+    $Script:AuroraImportState.fileBackedImageCount = [int]$Audit.FileBackedImageCount
+    $Script:AuroraImportState.missingFileBackedImageCount = [int]$Audit.MissingFileBackedImageCount
+    $Script:AuroraImportState.missingImagePaths = @($Audit.MissingImagePaths)
+    $Script:AuroraImportState.animationEntryCount = [int]$Audit.AnimationEntryCount
+    $Script:AuroraImportState.animationSidecarCount = [int]$Audit.AnimationSidecarCount
+    $Script:AuroraImportState.missingAnimationSidecarCount = [int]$Audit.MissingAnimationSidecarCount
+    $Script:AuroraImportState.geometryStatus = [string]$Audit.GeometryStatus
+    $Script:AuroraImportState.materialsStatus = [string]$Audit.MaterialsStatus
+    $Script:AuroraImportState.addonStatus = [string]$Audit.AddonStatus
+    $Script:AuroraImportState.animationMetadataStatus = [string]$Audit.AnimationMetadataStatus
+    $Script:AuroraImportState.animationControlsStatus = [string]$Audit.AnimationControlsStatus
+    $Script:AuroraImportState.pomDetailStatus = [string]$Audit.PomDetailStatus
+    $Script:AuroraImportState.pomDetailReason = [string]$Audit.PomDetailReason
+    $Script:AuroraImportState.pomDetailPropertyPath = [string]$Audit.PomDetailPropertyPath
+    $Script:AuroraImportState.viewportRenderedStatus = [string]$Audit.ViewportRenderedStatus
+    $Script:AuroraImportState.refreshMaterialsStatus = [string]$Audit.RefreshMaterialsStatus
+    $Script:AuroraImportState.refreshMaterialsReason = [string]$Audit.RefreshMaterialsReason
+    $Script:AuroraImportState.starbreakerPanelRegistered = [bool]$Audit.StarBreakerPanelRegistered
+    $Script:AuroraImportState.animationOperatorPollBefore = [string]$Audit.AnimationOperatorPollBefore
+    $Script:AuroraImportState.animationOperatorPollAfter = [string]$Audit.AnimationOperatorPollAfter
+    $Script:AuroraImportState.validationMode = [string]$Audit.ValidationMode
+    $Script:AuroraImportState.sceneBlendValidationPrimary = [bool]$Audit.SceneBlendValidationPrimary
+    $Script:AuroraImportState.runtimeSceneJsonImportUsed = [bool]$Audit.RuntimeSceneJsonImportUsed
     $Script:AuroraImportState.errors = @($Audit.Errors)
 }
 
@@ -8411,6 +8541,13 @@ function Get-AuroraLogMarkerValue {
         if ([string]$line -match $pattern) { return [string]$matches[1] }
     }
     return ""
+}
+
+function Get-AuroraLogMarkerList {
+    param([string[]]$Lines = @(), [string]$Name)
+    $raw = Get-AuroraLogMarkerValue -Lines $Lines -Name $Name
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+    return @($raw -split '\|\|\|' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
 }
 
 function ConvertTo-AuroraLogInt {
@@ -8442,6 +8579,7 @@ function Get-AuroraImportAuditFromLogs {
     foreach ($e in @($sceneSummary.errors)) { if (-not [string]::IsNullOrWhiteSpace([string]$e)) { [void]$errors.Add([string]$e) } }
     $audit = New-AuroraImportAuditResult `
         -SceneJson $SceneJson `
+        -SceneBlend (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "SCENE_BLEND") `
         -PackageRoot (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "PACKAGE_ROOT") `
         -ObjectCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "OBJECT_COUNT")) `
         -MeshObjectCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MESH_OBJECT_COUNT")) `
@@ -8453,6 +8591,32 @@ function Get-AuroraImportAuditFromLogs {
         -MeshAssetReferenceCount ([int]$sceneSummary.meshAssetReferenceCount) `
         -ExistingMeshAssetCount ([int]$sceneSummary.existingMeshAssetCount) `
         -SuspiciousZstdBlendCount ([int]$sceneSummary.suspiciousZstdBlendCount) `
+        -MaterialCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MATERIAL_COUNT")) `
+        -ImageCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "IMAGE_COUNT")) `
+        -ImageTextureNodeCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "IMAGE_TEXTURE_NODE_COUNT")) `
+        -FileBackedImageCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "FILE_BACKED_IMAGE_COUNT")) `
+        -MissingFileBackedImageCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MISSING_FILE_BACKED_IMAGE_COUNT")) `
+        -MissingImagePaths (Get-AuroraLogMarkerList -Lines @($lines.ToArray()) -Name "MISSING_IMAGE_PATHS") `
+        -AnimationEntryCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ANIMATION_ENTRY_COUNT")) `
+        -AnimationSidecarCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ANIMATION_SIDECAR_COUNT")) `
+        -MissingAnimationSidecarCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MISSING_ANIMATION_SIDECAR_COUNT")) `
+        -GeometryStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "GEOMETRY_STATUS") `
+        -MaterialsStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MATERIALS_STATUS") `
+        -AddonStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ADDON_STATUS") `
+        -AnimationMetadataStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ANIMATION_METADATA_STATUS") `
+        -AnimationControlsStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ANIMATION_CONTROLS_STATUS") `
+        -PomDetailStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "POM_DETAIL_STATUS") `
+        -PomDetailReason (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "POM_DETAIL_REASON") `
+        -PomDetailPropertyPath (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "POM_DETAIL_PROPERTY_PATH") `
+        -ViewportRenderedStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "VIEWPORT_RENDERED_STATUS") `
+        -RefreshMaterialsStatus (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "REFRESH_MATERIALS_STATUS") `
+        -RefreshMaterialsReason (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "REFRESH_MATERIALS_REASON") `
+        -StarBreakerPanelRegistered:((Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "STARBREAKER_PANEL_REGISTERED") -eq "True") `
+        -AnimationOperatorPollBefore (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ANIMATION_OPERATOR_POLL_BEFORE") `
+        -AnimationOperatorPollAfter (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ANIMATION_OPERATOR_POLL_AFTER") `
+        -ValidationMode (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "VALIDATION_MODE") `
+        -SceneBlendValidationPrimary:((Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "SCENE_BLEND_VALIDATION_PRIMARY") -eq "True") `
+        -RuntimeSceneJsonImportUsed:((Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "RUNTIME_SCENE_JSON_IMPORT_USED") -eq "True") `
         -Errors @($errors.ToArray() | Select-Object -First 40)
     $explicitVerdict = Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "VERDICT"
     $explicitReason = Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "REASON"
@@ -8468,6 +8632,12 @@ function Open-AuroraExportInBlender {
         [Parameter(Mandatory=$true)][string]$SceneJson,
         [Parameter(Mandatory=$true)][string]$ExportDir
     )
+    # v0.42: scene.blend is the authoritative visual review artifact. Keep
+    # this legacy entry point as a compatibility shim, but route it to the
+    # scene.blend validation/open path instead of scene.json runtime import.
+    Open-AuroraSceneBlendInBlender -SceneJson $SceneJson -ExportDir $ExportDir
+    return
+
     if ($NoOpenBlenderAfterExport) {
         $Script:AuroraImportState.status = "SKIPPED"
         $Script:AuroraImportState.reason = "Blender open skipped because NoOpenBlenderAfterExport was set."
@@ -9227,6 +9397,668 @@ log('Helper finished. import_succeeded={0} method={1}'.format(import_succeeded, 
     }
 }
 
+function Write-AuroraSceneBlendLauncher {
+    param(
+        [Parameter(Mandatory=$true)][string]$BlenderExe,
+        [Parameter(Mandatory=$true)][string]$SceneBlend,
+        [Parameter(Mandatory=$true)][string]$SceneJson,
+        [Parameter(Mandatory=$true)][string]$HelperScript
+    )
+    $launcherPath = Join-Path $ScWorkRoot "Open-Aurora-MR-in-Blender.cmd"
+    $guiLog = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend_gui.log"
+    $content = @"
+@echo off
+setlocal
+set "SC_AURORA_BLENDER_EXE=$BlenderExe"
+set "SC_AURORA_SCENE_BLEND=$SceneBlend"
+set "SC_AURORA_SCENE_JSON=$SceneJson"
+set "SC_AURORA_HELPER_SCRIPT=$HelperScript"
+set "SC_AURORA_HELPER_LOG=$guiLog"
+set "SC_AURORA_HELPER_MODE=gui"
+if not exist "%SC_AURORA_BLENDER_EXE%" (
+  echo Blender executable was not found:
+  echo   %SC_AURORA_BLENDER_EXE%
+  exit /b 1
+)
+if not exist "%SC_AURORA_SCENE_BLEND%" (
+  echo Aurora scene.blend was not found:
+  echo   %SC_AURORA_SCENE_BLEND%
+  exit /b 1
+)
+if not exist "%SC_AURORA_HELPER_SCRIPT%" (
+  echo Aurora Blender helper script was not found:
+  echo   %SC_AURORA_HELPER_SCRIPT%
+  exit /b 1
+)
+start "" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%" --python "%SC_AURORA_HELPER_SCRIPT%"
+exit /b 0
+"@
+    Write-InstallerFile -Path $launcherPath -Text $content
+    $Script:AuroraImportState.launcherPath = $launcherPath
+    return $launcherPath
+}
+
+function Open-AuroraSceneBlendInBlender {
+    param(
+        [Parameter(Mandatory=$true)][string]$SceneJson,
+        [Parameter(Mandatory=$true)][string]$ExportDir
+    )
+    if ($NoOpenBlenderAfterExport) {
+        $Script:AuroraImportState.status = "SKIPPED"
+        $Script:AuroraImportState.reason = "Blender open skipped because NoOpenBlenderAfterExport was set."
+        Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because NoOpenBlenderAfterExport was set."
+        return
+    }
+
+    $sceneBlend = Find-AuroraExportSceneBlend -ExportDir $ExportDir -SceneJson $SceneJson
+    if ([string]::IsNullOrWhiteSpace($SceneJson) -or -not (Test-Path -LiteralPath $SceneJson)) {
+        Write-Warning "Could not find Aurora scene.json metadata under: $ExportDir"
+        $audit = New-AuroraImportAuditResult -SceneJson $SceneJson -SceneBlend $sceneBlend -Errors @("Aurora scene.json metadata was not found.")
+        Set-AuroraImportStateFromAudit -Audit $audit
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = [string]$audit.Reason
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($sceneBlend) -or -not (Test-Path -LiteralPath $sceneBlend)) {
+        Write-Warning "Could not find generated Aurora scene.blend under: $ExportDir"
+        $audit = New-AuroraImportAuditResult -SceneJson $SceneJson -SceneBlend $sceneBlend -Errors @("Aurora scene.blend was not found.")
+        Set-AuroraImportStateFromAudit -Audit $audit
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = [string]$audit.Reason
+        return
+    }
+
+    $blenderExe = [string]$Script:BlenderState.exe
+    if ([string]::IsNullOrWhiteSpace($blenderExe) -or -not (Test-Path -LiteralPath $blenderExe)) {
+        Write-Host "Aurora export succeeded. Open this Blender scene manually:" -ForegroundColor Cyan
+        Write-Host "  $sceneBlend" -ForegroundColor Yellow
+        $Script:AuroraImportState.status = "SKIPPED"
+        $Script:AuroraImportState.reason = "Blender scene.blend validation skipped because Blender executable was not selected."
+        $Script:AuroraImportState.sceneJson = [string]$SceneJson
+        $Script:AuroraImportState.sceneBlend = [string]$sceneBlend
+        Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender scene.blend validation skipped because Blender executable was not selected."
+        return
+    }
+
+    Ensure-Directory $ScWorkRoot
+    $pyPath = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend.py"
+    $auditLogPath = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend_audit.log"
+    $stdoutPath = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend.stdout.log"
+    $stderrPath = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend.stderr.log"
+
+    $py = @'
+import json
+import os
+import traceback
+from pathlib import Path
+
+import bpy
+
+scene_blend = os.environ.get('SC_AURORA_SCENE_BLEND', '')
+scene_json = os.environ.get('SC_AURORA_SCENE_JSON', '')
+log_path = os.environ.get('SC_AURORA_HELPER_LOG', '')
+mode = os.environ.get('SC_AURORA_HELPER_MODE', 'audit').strip().lower() or 'audit'
+addon_modname = 'starbreaker_addon'
+
+
+def log(msg):
+    line = '[SC-Aurora-scene.blend] ' + str(msg)
+    print(line)
+    if log_path:
+        try:
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(str(msg) + '\n')
+        except Exception:
+            pass
+
+
+def emit(name, value):
+    log('SC_AURORA_' + name + '=' + str(value))
+
+
+def log_exc(label, exc):
+    log(label + ': ' + str(exc))
+    try:
+        log(traceback.format_exc())
+    except Exception:
+        pass
+
+
+def norm(path):
+    try:
+        return os.path.normcase(os.path.abspath(path))
+    except Exception:
+        return str(path or '')
+
+
+log('Helper starting.')
+log('mode=' + mode)
+log('scene_blend=' + scene_blend)
+log('scene_json=' + scene_json)
+log('Blender version=' + bpy.app.version_string)
+
+scene_blend_exists = bool(scene_blend) and os.path.isfile(scene_blend)
+scene_json_exists = bool(scene_json) and os.path.isfile(scene_json)
+if scene_blend_exists:
+    try:
+        if not bpy.data.filepath or norm(bpy.data.filepath) != norm(scene_blend):
+            bpy.ops.wm.open_mainfile(filepath=scene_blend)
+            log('Opened scene.blend with bpy.ops.wm.open_mainfile.')
+        else:
+            log('scene.blend was already open.')
+    except Exception as exc:
+        log_exc('Could not open scene.blend', exc)
+else:
+    log('scene.blend missing on disk.')
+
+addon_enabled = False
+runtime_mod = None
+addon_status = 'WARN'
+addon_reason = 'StarBreaker add-on was not confirmed.'
+try:
+    bpy.ops.preferences.addon_enable(module=addon_modname)
+    addon_enabled = True
+    addon_status = 'OK'
+    addon_reason = 'starbreaker_addon enabled.'
+    log('Enabled add-on module: ' + addon_modname)
+except Exception as exc:
+    log('Could not enable expected add-on module: ' + str(exc))
+    try:
+        import addon_utils
+        candidates = [m.__name__ for m in addon_utils.modules() if 'starbreaker' in m.__name__.lower()]
+        log('StarBreaker-like add-on modules visible: ' + (', '.join(candidates) if candidates else '<none>'))
+        for candidate in candidates:
+            try:
+                bpy.ops.preferences.addon_enable(module=candidate)
+                addon_modname = candidate
+                addon_enabled = True
+                addon_status = 'OK'
+                addon_reason = 'Enabled alternate add-on module ' + candidate
+                break
+            except Exception as inner:
+                log('Failed to enable alternate add-on ' + candidate + ': ' + str(inner))
+    except Exception as enum_exc:
+        log('Could not enumerate add-ons: ' + str(enum_exc))
+
+try:
+    if addon_enabled:
+        import importlib
+        runtime_mod = importlib.import_module(addon_modname + '.runtime')
+        log('Imported runtime module: ' + runtime_mod.__name__)
+except Exception as exc:
+    addon_status = 'WARN' if addon_enabled else 'FAILED'
+    addon_reason = 'Could not import StarBreaker runtime module: ' + str(exc)
+    log_exc('Runtime import failed', exc)
+
+
+def runtime_const(name, fallback):
+    try:
+        if runtime_mod is not None:
+            return getattr(runtime_mod, name, fallback)
+    except Exception:
+        pass
+    return fallback
+
+
+PROP_PACKAGE_ROOT = runtime_const('PROP_PACKAGE_ROOT', 'starbreaker_package_root')
+PROP_SCENE_PATH = runtime_const('PROP_SCENE_PATH', 'starbreaker_scene_path')
+PROP_PACKAGE_NAME = runtime_const('PROP_PACKAGE_NAME', 'starbreaker_package_name')
+SCENE_POM_DETAIL_PROP = runtime_const('SCENE_POM_DETAIL_PROP', 'starbreaker_pom_detail')
+
+
+def is_package_root(obj):
+    if obj is None:
+        return False
+    for key in (PROP_PACKAGE_ROOT, 'starbreaker_package_root'):
+        try:
+            if bool(obj.get(key, False)):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def object_scene_path(obj):
+    for key in (PROP_SCENE_PATH, 'starbreaker_scene_path', 'scene_path'):
+        try:
+            value = obj.get(key)
+            if isinstance(value, str) and value:
+                return value
+        except Exception:
+            pass
+    return ''
+
+
+def score_root(obj):
+    score = 0
+    name = getattr(obj, 'name', '') or ''
+    lower = name.lower()
+    if is_package_root(obj):
+        score += 500
+    osp = object_scene_path(obj)
+    if osp:
+        score += 200
+        if scene_json_exists and norm(osp) == norm(scene_json):
+            score += 300
+    if lower.startswith('starbreaker'):
+        score += 80
+    if 'aurora' in lower:
+        score += 80
+    if obj.parent is None:
+        score += 10
+    return score
+
+
+def find_package_root_object():
+    candidates = []
+    for obj in bpy.data.objects:
+        score = score_root(obj)
+        if score > 0:
+            candidates.append((score, obj.name, obj))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    if candidates:
+        root = candidates[0][2]
+        log('Selected package root candidate: {0} score={1}'.format(root.name, candidates[0][0]))
+        return root
+    return None
+
+
+def select_root(root):
+    poll_before = 'Unknown'
+    poll_after = 'Unknown'
+    try:
+        poll_before = str(bool(bpy.ops.starbreaker.apply_animation_mode.poll()))
+    except Exception:
+        poll_before = 'Unavailable'
+    try:
+        bpy.ops.object.select_all(action='DESELECT')
+    except Exception:
+        pass
+    if root is not None:
+        try:
+            root.select_set(True)
+            bpy.context.view_layer.objects.active = root
+        except Exception:
+            pass
+    try:
+        poll_after = str(bool(bpy.ops.starbreaker.apply_animation_mode.poll()))
+    except Exception:
+        poll_after = 'Unavailable'
+    return poll_before, poll_after
+
+
+def descendants(root):
+    if root is None:
+        return []
+    try:
+        return list(root.children_recursive)
+    except Exception:
+        out = []
+        stack = list(getattr(root, 'children', []))
+        while stack:
+            item = stack.pop(0)
+            out.append(item)
+            stack.extend(list(getattr(item, 'children', [])))
+        return out
+
+
+def audit_geometry(root):
+    mesh_count = 0
+    used_mesh_count = 0
+    collection_instance_count = 0
+    missing_asset_count = 0
+    for obj in bpy.data.objects:
+        try:
+            if obj.type == 'MESH':
+                mesh_count += 1
+                data = getattr(obj, 'data', None)
+                if data is not None and getattr(data, 'users', 0) > 0:
+                    used_mesh_count += 1
+        except Exception:
+            pass
+        try:
+            if getattr(obj, 'instance_type', '') == 'COLLECTION' and getattr(obj, 'instance_collection', None) is not None:
+                collection_instance_count += 1
+        except Exception:
+            pass
+        try:
+            if obj.get('starbreaker_missing_asset'):
+                missing_asset_count += 1
+        except Exception:
+            pass
+    try:
+        linked_library_count = len([lib for lib in bpy.data.libraries if lib is not None])
+    except Exception:
+        linked_library_count = 0
+    try:
+        action_count = len(bpy.data.actions)
+    except Exception:
+        action_count = 0
+    return {
+        'object_count': len(bpy.data.objects),
+        'mesh_object_count': mesh_count,
+        'nonzero_used_mesh_datablock_count': used_mesh_count,
+        'collection_instance_count': collection_instance_count,
+        'linked_library_count': linked_library_count,
+        'action_count': action_count,
+        'missing_asset_count': missing_asset_count,
+    }
+
+
+def audit_materials():
+    image_texture_nodes = 0
+    file_backed = 0
+    missing = []
+    for mat in bpy.data.materials:
+        tree = getattr(mat, 'node_tree', None)
+        if tree is None:
+            continue
+        for node in tree.nodes:
+            if getattr(node, 'bl_idname', '') != 'ShaderNodeTexImage':
+                continue
+            image_texture_nodes += 1
+            image = getattr(node, 'image', None)
+            if image is None:
+                continue
+            path = getattr(image, 'filepath', '') or ''
+            if not path:
+                continue
+            file_backed += 1
+            try:
+                resolved = bpy.path.abspath(path)
+            except Exception:
+                resolved = path
+            if resolved and not os.path.exists(resolved):
+                missing.append(resolved)
+    return {
+        'material_count': len(bpy.data.materials),
+        'image_count': len(bpy.data.images),
+        'image_texture_node_count': image_texture_nodes,
+        'file_backed_image_count': file_backed,
+        'missing_file_backed_image_count': len(missing),
+        'missing_image_paths': missing[:10],
+    }
+
+
+def walk_json(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_json(child)
+
+
+def audit_animation_metadata():
+    entry_count = 0
+    sidecars = []
+    if scene_json_exists:
+        try:
+            with open(scene_json, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for node in walk_json(data):
+                animations = node.get('animations')
+                if isinstance(animations, list):
+                    for clip in animations:
+                        if not isinstance(clip, dict):
+                            continue
+                        entry_count += 1
+                        sidecar = clip.get('sidecar')
+                        if isinstance(sidecar, str) and sidecar.strip():
+                            sidecars.append(sidecar.strip())
+        except Exception as exc:
+            log('Could not inspect animation metadata: ' + str(exc))
+    missing = 0
+    scene_root = Path(scene_json).parent if scene_json_exists else None
+    for sidecar in sidecars:
+        candidate = Path(sidecar)
+        if not candidate.is_absolute() and scene_root is not None:
+            candidate = scene_root / sidecar
+        if not candidate.is_file():
+            missing += 1
+    return {
+        'animation_entry_count': entry_count,
+        'animation_sidecar_count': len(sidecars),
+        'missing_animation_sidecar_count': missing,
+    }
+
+
+def set_pom_high():
+    status = 'WARN'
+    reason = 'POM Detail property was not found.'
+    prop_path = ''
+    try:
+        setattr(bpy.context.scene, SCENE_POM_DETAIL_PROP, 'HIGH')
+        prop_path = 'bpy.context.scene.' + SCENE_POM_DETAIL_PROP
+        status = 'OK'
+        reason = 'Set scene POM Detail property to HIGH.'
+    except Exception as exc:
+        reason = 'Could not set scene POM Detail property: ' + str(exc)
+    try:
+        if runtime_mod is not None and hasattr(runtime_mod, 'apply_pom_detail_mode'):
+            runtime_mod.apply_pom_detail_mode('HIGH')
+            prop_path = (prop_path + ' + ' if prop_path else '') + addon_modname + '.runtime.apply_pom_detail_mode'
+            status = 'OK'
+            reason = 'Set POM Detail to HIGH and applied runtime updater.'
+    except Exception as exc:
+        if status == 'OK':
+            reason = 'Scene property set to HIGH; runtime updater failed: ' + str(exc)
+        else:
+            reason = 'Could not apply runtime POM Detail updater: ' + str(exc)
+    return status, reason, prop_path
+
+
+def set_rendered_viewport(root):
+    if not bpy.context.screen:
+        return 'WARN'
+    changed = 0
+    try:
+        for area in bpy.context.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            for space in area.spaces:
+                if space.type != 'VIEW_3D':
+                    continue
+                space.shading.type = 'RENDERED'
+                try:
+                    space.show_region_ui = True
+                except Exception:
+                    pass
+                changed += 1
+        if root is not None:
+            try:
+                for area in bpy.context.screen.areas:
+                    if area.type != 'VIEW_3D':
+                        continue
+                    region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+                    space = area.spaces.active
+                    if region is None or space is None:
+                        continue
+                    with bpy.context.temp_override(area=area, region=region, space_data=space):
+                        bpy.ops.view3d.view_selected(use_all_regions=False)
+            except Exception as exc:
+                log('Viewport framing best-effort failed: ' + str(exc))
+    except Exception as exc:
+        log('Rendered viewport update failed: ' + str(exc))
+    return 'OK' if changed > 0 else 'WARN'
+
+
+def refresh_materials_if_safe():
+    if mode != 'gui':
+        return 'SKIPPED', 'Refresh Materials is only attempted by the GUI helper.'
+    try:
+        namespace = getattr(bpy.ops, 'starbreaker')
+        op = getattr(namespace, 'refresh_materials')
+    except Exception:
+        return 'WARN', 'starbreaker.refresh_materials operator is not available in this add-on.'
+    try:
+        if hasattr(op, 'poll') and not op.poll():
+            return 'WARN', 'starbreaker.refresh_materials exists but poll() returned false.'
+        result = op()
+        return 'OK', 'starbreaker.refresh_materials returned ' + repr(result)
+    except Exception as exc:
+        return 'WARN', 'starbreaker.refresh_materials failed: ' + str(exc)
+
+
+def create_instruction_text(root):
+    if mode != 'gui':
+        return
+    try:
+        existing = bpy.data.texts.get('SC Zero to Hero - scene.blend')
+        if existing is not None:
+            bpy.data.texts.remove(existing)
+        text = bpy.data.texts.new('SC Zero to Hero - scene.blend')
+        lines = [
+            'Opened by SC Zero to Hero setup.',
+            '',
+            'This workflow opens scene.blend directly because it is the StarBreaker Blender scene file.',
+            'Select the StarBreaker package root if controls disappear.',
+            'Press N and use the StarBreaker tab.',
+            'Scroll inside the StarBreaker tab to reach Animations.',
+            'POM Detail should be High.',
+            'Viewport should be Rendered; Material Preview is also useful.',
+            'Use Refresh Materials if textures look wrong.',
+            'The black wire/curve clutter is StarBreaker/scene helper data and not necessarily an import failure.',
+            '',
+            'Scene blend: ' + (scene_blend or '(none)'),
+            'Scene JSON:  ' + (scene_json or '(none)'),
+            'Package root: ' + (getattr(root, 'name', '') if root is not None else '(not found)'),
+        ]
+        text.write('\n'.join(lines))
+        log('Created SC Zero to Hero instruction text block.')
+    except Exception as exc:
+        log('Could not create instruction text block: ' + str(exc))
+
+
+root = find_package_root_object()
+poll_before, poll_after = select_root(root)
+pom_status, pom_reason, pom_path = set_pom_high()
+viewport_status = set_rendered_viewport(root) if mode == 'gui' else 'SKIPPED'
+refresh_status, refresh_reason = refresh_materials_if_safe()
+create_instruction_text(root)
+
+geometry = audit_geometry(root)
+materials = audit_materials()
+animation = audit_animation_metadata()
+panel_registered = hasattr(bpy.types, 'STARBREAKER_PT_tools')
+has_geometry = geometry['mesh_object_count'] > 0 or geometry['nonzero_used_mesh_datablock_count'] > 0 or (geometry['collection_instance_count'] > 0 and geometry['linked_library_count'] > 0)
+geometry_status = 'OK' if scene_blend_exists and root is not None and has_geometry else 'FAILED'
+materials_status = 'OK' if materials['material_count'] > 0 and materials['missing_file_backed_image_count'] == 0 else 'WARN'
+animation_metadata_status = 'OK' if animation['animation_sidecar_count'] > 0 and animation['missing_animation_sidecar_count'] == 0 else 'WARN'
+animation_controls_status = 'OK' if poll_after == 'True' else 'WARN'
+
+verdict = 'OK'
+reason = 'Blender scene.blend validation produced usable geometry.'
+if not scene_blend_exists:
+    verdict = 'FAILED'
+    reason = 'Aurora scene.blend was missing after export.'
+elif not scene_json_exists:
+    verdict = 'FAILED'
+    reason = 'Aurora scene.json metadata was missing after export.'
+elif root is None:
+    verdict = 'FAILED'
+    reason = 'Blender scene.blend validation did not find a StarBreaker package root.'
+elif not has_geometry:
+    verdict = 'FAILED'
+    reason = 'Blender scene.blend validation found no usable mesh objects or used mesh datablocks.'
+elif addon_status == 'FAILED':
+    verdict = 'FAILED'
+    reason = 'StarBreaker add-on was not available during scene.blend validation.'
+elif materials_status == 'WARN' or animation_metadata_status == 'WARN' or animation_controls_status == 'WARN':
+    reason = 'Blender scene.blend visual geometry validated; material or animation context warnings were recorded separately.'
+
+emit('VALIDATION_MODE', mode)
+emit('SCENE_BLEND_VALIDATION_PRIMARY', True)
+emit('RUNTIME_SCENE_JSON_IMPORT_USED', False)
+emit('SCENE_BLEND', scene_blend)
+emit('SCENE_JSON', scene_json)
+emit('VERDICT', verdict)
+emit('REASON', reason)
+emit('PACKAGE_ROOT', getattr(root, 'name', '') if root is not None else '')
+emit('GEOMETRY_STATUS', geometry_status)
+emit('MATERIALS_STATUS', materials_status)
+emit('ADDON_STATUS', addon_status)
+emit('ADDON_REASON', addon_reason)
+emit('ANIMATION_METADATA_STATUS', animation_metadata_status)
+emit('ANIMATION_CONTROLS_STATUS', animation_controls_status)
+emit('POM_DETAIL_STATUS', pom_status)
+emit('POM_DETAIL_REASON', pom_reason)
+emit('POM_DETAIL_PROPERTY_PATH', pom_path)
+emit('VIEWPORT_RENDERED_STATUS', viewport_status)
+emit('REFRESH_MATERIALS_STATUS', refresh_status)
+emit('REFRESH_MATERIALS_REASON', refresh_reason)
+emit('STARBREAKER_PANEL_REGISTERED', panel_registered)
+emit('ANIMATION_OPERATOR_POLL_BEFORE', poll_before)
+emit('ANIMATION_OPERATOR_POLL_AFTER', poll_after)
+for key, value in geometry.items():
+    emit(key.upper(), value)
+for key, value in materials.items():
+    if key == 'missing_image_paths':
+        emit('MISSING_IMAGE_PATHS', '|||'.join(str(item) for item in value))
+    else:
+        emit(key.upper(), value)
+for key, value in animation.items():
+    emit(key.upper(), value)
+log('Helper finished.')
+'@
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($pyPath, $py, $utf8)
+    try { if (Test-Path -LiteralPath $auditLogPath) { Remove-Item -LiteralPath $auditLogPath -Force -ErrorAction SilentlyContinue } } catch { }
+    try { if (Test-Path -LiteralPath $stdoutPath) { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue } } catch { }
+    try { if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue } } catch { }
+
+    Write-Host "Validating generated Aurora scene.blend in Blender before marking the example successful..." -ForegroundColor Cyan
+    Write-Host "Scene blend: $sceneBlend" -ForegroundColor Yellow
+    Write-Host "Scene JSON:  $SceneJson" -ForegroundColor DarkYellow
+    Write-Host "Helper log: $auditLogPath" -ForegroundColor DarkGray
+    Write-Host "Blender stdout: $stdoutPath" -ForegroundColor DarkGray
+    Write-Host "Blender stderr: $stderrPath" -ForegroundColor DarkGray
+    try {
+        $env:SC_AURORA_SCENE_BLEND = $sceneBlend
+        $env:SC_AURORA_SCENE_JSON = $SceneJson
+        $env:SC_AURORA_HELPER_LOG = $auditLogPath
+        $env:SC_AURORA_HELPER_MODE = "audit"
+        Assert-InstallerExternalCommandAllowed -Exe $blenderExe -Arguments @("--background", $sceneBlend, "--python", $pyPath)
+        $proc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", $sceneBlend, "--python", $pyPath) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru -WindowStyle Hidden
+        $audit = Get-AuroraImportAuditFromLogs -SceneJson $SceneJson -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        if ([string]::IsNullOrWhiteSpace([string]$audit.SceneBlend)) { $audit.SceneBlend = $sceneBlend }
+        Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        Write-Host ("Aurora scene.blend validation verdict: {0}" -f [string]$audit.Status) -ForegroundColor $(if ([string]$audit.Status -eq "OK") { "Green" } else { "Red" })
+        Write-Host ("Reason: {0}" -f [string]$audit.Reason) -ForegroundColor DarkYellow
+        Write-Host ("Geometry={0}, Materials={1}, Add-on={2}, AnimationMetadata={3}, AnimationControls={4}" -f [string]$audit.GeometryStatus, [string]$audit.MaterialsStatus, [string]$audit.AddonStatus, [string]$audit.AnimationMetadataStatus, [string]$audit.AnimationControlsStatus) -ForegroundColor DarkCyan
+        Write-Host ("Objects={0}, MeshObjects={1}, UsedMeshData={2}, Materials={3}, Images={4}, LinkedLibraries={5}" -f [int]$audit.ObjectCount, [int]$audit.MeshObjectCount, [int]$audit.NonzeroUsedMeshDatablockCount, [int]$audit.MaterialCount, [int]$audit.ImageCount, [int]$audit.LinkedLibraryCount) -ForegroundColor DarkCyan
+        if ([int]$proc.ExitCode -ne 0 -and [string]$audit.Status -eq "OK") {
+            $audit.Status = "FAILED"
+            $audit.Reason = "Blender scene.blend validation helper exited with code $($proc.ExitCode)."
+            Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        }
+        if ([string]$audit.Status -eq "FAILED") {
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = [string]$audit.Reason
+            return
+        }
+
+        $launcherPath = Write-AuroraSceneBlendLauncher -BlenderExe $blenderExe -SceneBlend $sceneBlend -SceneJson $SceneJson -HelperScript $pyPath
+        Write-Host "Reusable Aurora Blender launcher: $launcherPath" -ForegroundColor Green
+
+        if (-not $Script:NoGui -and -not (Test-NonLiveInstallerMode)) {
+            Write-Host "Opening Blender directly with generated scene.blend for visual review..." -ForegroundColor Cyan
+            $env:SC_AURORA_HELPER_LOG = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend_gui.log"
+            $env:SC_AURORA_HELPER_MODE = "gui"
+            Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @($sceneBlend, "--python", $pyPath)
+        }
+    } catch {
+        Write-Warning "Could not validate/open generated scene.blend automatically: $($_.Exception.Message)"
+        $audit = New-AuroraImportAuditResult -SceneJson $SceneJson -SceneBlend $sceneBlend -Errors @($_.Exception.Message)
+        Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = [string]$audit.Reason
+        Write-Host "Open this Blender scene manually:" -ForegroundColor Cyan
+        Write-Host "  $sceneBlend" -ForegroundColor Yellow
+    }
+}
+
 function Show-SetupOutcomeSummary {
     if ($Script:HiddenDryRun) { return }
 
@@ -9373,10 +10205,15 @@ function Show-SetupOutcomeSummary {
             "SKIPPED" { "DarkYellow" }
             default { "Red" }
         }
-        Write-Host "AURORA / BLENDER IMPORT STATUS:" -ForegroundColor Cyan
+        Write-Host "AURORA / BLENDER SCENE STATUS:" -ForegroundColor Cyan
         Write-Host ("  - Verdict: {0}" -f [string]$Script:AuroraImportState.status) -ForegroundColor $auroraColor
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.reason)) { Write-Host ("    Reason: " + [string]$Script:AuroraImportState.reason) -ForegroundColor DarkYellow }
-        Write-Host ("    Objects={0}, MeshObjects={1}, UsedMeshData={2}, MissingAssets={3}" -f [int]$Script:AuroraImportState.objectCount, [int]$Script:AuroraImportState.meshObjectCount, [int]$Script:AuroraImportState.nonzeroUsedMeshDatablockCount, [int]$Script:AuroraImportState.missingAssetCount) -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.sceneBlend)) { Write-Host ("    scene.blend: " + [string]$Script:AuroraImportState.sceneBlend) -ForegroundColor DarkCyan }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.sceneJson)) { Write-Host ("    scene.json: " + [string]$Script:AuroraImportState.sceneJson) -ForegroundColor DarkCyan }
+        Write-Host ("    Geometry={0}; Materials={1}; Add-on={2}; Animation metadata={3}; Animation controls={4}" -f [string]$Script:AuroraImportState.geometryStatus, [string]$Script:AuroraImportState.materialsStatus, [string]$Script:AuroraImportState.addonStatus, [string]$Script:AuroraImportState.animationMetadataStatus, [string]$Script:AuroraImportState.animationControlsStatus) -ForegroundColor DarkCyan
+        Write-Host ("    Objects={0}, MeshObjects={1}, UsedMeshData={2}, LinkedLibraries={3}, Materials={4}, Images={5}, MissingAssets={6}" -f [int]$Script:AuroraImportState.objectCount, [int]$Script:AuroraImportState.meshObjectCount, [int]$Script:AuroraImportState.nonzeroUsedMeshDatablockCount, [int]$Script:AuroraImportState.linkedLibraryCount, [int]$Script:AuroraImportState.materialCount, [int]$Script:AuroraImportState.imageCount, [int]$Script:AuroraImportState.missingAssetCount) -ForegroundColor DarkCyan
+        Write-Host ("    POM High={0}; Viewport Rendered={1}; Refresh Materials={2}" -f [string]$Script:AuroraImportState.pomDetailStatus, [string]$Script:AuroraImportState.viewportRenderedStatus, [string]$Script:AuroraImportState.refreshMaterialsStatus) -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.launcherPath)) { Write-Host ("    Launcher: " + [string]$Script:AuroraImportState.launcherPath) -ForegroundColor DarkCyan }
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.helperLog)) { Write-Host ("    Helper log: " + [string]$Script:AuroraImportState.helperLog) -ForegroundColor DarkGray }
     }
 
@@ -10474,17 +11311,27 @@ function Invoke-SelfTest {
     } catch { Add-SelfTestError "Workspace generation self-test failed: $($_.Exception.Message)" }
 
     try {
-        Assert-SelfTest ([string]$Script:ScriptVersion -eq "v0.41") "Script version was not v0.41."
+        Assert-SelfTest ([string]$Script:ScriptVersion -eq "v0.42") "Script version was not v0.42."
         $auroraTestRoot = Join-Path $Script:HarnessRoot "aurora-audit-tests"
         New-InstallerDirectory -Path $auroraTestRoot
         $fakeScene = Join-Path $auroraTestRoot "scene.json"
         Write-InstallerFile -Path $fakeScene -Text '{"objects":[]}'
-        $zeroMesh = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 129 -MeshObjectCount 0 -NonzeroUsedMeshDatablockCount 0 -CollectionInstanceCount 0 -ActionCount 0 -LinkedLibraryCount 0 -MissingAssetCount 120 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120
+        $fakeBlend = Join-Path $auroraTestRoot "scene.blend"
+        Write-InstallerFile -Path $fakeBlend -Text "BLENDER synthetic scene file"
+        $sceneBlendOk = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 420 -MeshObjectCount 118 -NonzeroUsedMeshDatablockCount 118 -CollectionInstanceCount 0 -ActionCount 3 -LinkedLibraryCount 12 -MissingAssetCount 0 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120 -MaterialCount 88 -ImageCount 42 -AddonStatus "OK" -GeometryStatus "OK" -MaterialsStatus "OK" -AnimationMetadataStatus "OK" -AnimationControlsStatus "OK" -PomDetailStatus "OK" -ViewportRenderedStatus "OK" -RefreshMaterialsStatus "OK" -SceneBlendValidationPrimary:$true
+        Assert-SelfTest ([string]$sceneBlendOk.Status -eq "OK") "scene.blend geometry validation did not pass when meshes were present."
+        Set-AuroraImportStateFromAudit -Audit $sceneBlendOk -HelperLog (Join-Path $auroraTestRoot "helper-ok.log")
+        Assert-SelfTest (Test-StepCacheMarkerAllowed -StepId "aurora-example") "aurora-example cache marker was not allowed after scene.blend geometry validation passed."
+        $materialWarn = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 420 -MeshObjectCount 118 -NonzeroUsedMeshDatablockCount 118 -LinkedLibraryCount 12 -MaterialCount 88 -ImageCount 42 -GeometryStatus "OK" -MaterialsStatus "WARN" -AddonStatus "OK" -AnimationMetadataStatus "WARN" -AnimationControlsStatus "WARN" -SceneBlendValidationPrimary:$true
+        Assert-SelfTest ([string]$materialWarn.Status -eq "OK") "Material or animation warning incorrectly failed scene.blend geometry validation."
+        $missingBlend = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 420 -MeshObjectCount 118 -NonzeroUsedMeshDatablockCount 118 -GeometryStatus "OK"
+        Assert-SelfTest ([string]$missingBlend.Status -eq "FAILED") "Missing scene.blend was not rejected."
+        $zeroMesh = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 129 -MeshObjectCount 0 -NonzeroUsedMeshDatablockCount 0 -CollectionInstanceCount 0 -ActionCount 0 -LinkedLibraryCount 0 -MissingAssetCount 120 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120
         Assert-SelfTest ([string]$zeroMesh.Status -eq "FAILED") "Package-root-only Aurora import was not rejected."
         Assert-SelfTest ([string]$zeroMesh.Reason -match "no usable mesh objects") "Zero-mesh Aurora rejection reason was unclear."
-        $badGltf = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 10 -MeshObjectCount 2 -NonzeroUsedMeshDatablockCount 2 -Errors @("Error: Bad glTF: json error: utf-8")
+        $badGltf = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 10 -MeshObjectCount 2 -NonzeroUsedMeshDatablockCount 2 -Errors @("Error: Bad glTF: json error: utf-8")
         Assert-SelfTest ([string]$badGltf.Status -eq "FAILED") "Bad glTF/utf-8 Aurora import was not rejected."
-        $missingBroad = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 140 -MeshObjectCount 2 -NonzeroUsedMeshDatablockCount 2 -MissingAssetCount 80 -MeshAssetReferenceCount 80 -ExistingMeshAssetCount 80
+        $missingBroad = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 140 -MeshObjectCount 2 -NonzeroUsedMeshDatablockCount 2 -MissingAssetCount 80 -MeshAssetReferenceCount 80 -ExistingMeshAssetCount 80
         Assert-SelfTest ([string]$missingBroad.Status -eq "FAILED") "Broad starbreaker_missing_asset placeholder state was not rejected."
         Set-AuroraImportStateFromAudit -Audit $zeroMesh -HelperLog (Join-Path $auroraTestRoot "helper.log")
         Assert-SelfTest (-not (Test-StepCacheMarkerAllowed -StepId "aurora-example")) "aurora-example cache marker was allowed for failed/weak import."
@@ -10515,7 +11362,7 @@ function Invoke-SelfTest {
         $dubious = Test-GitDubiousOwnershipOutput -OutputLines @("fatal: detected dubious ownership in repository at 'C:/dev/starcitizen/StarBreaker'", "git config --global --add safe.directory C:/dev/starcitizen/StarBreaker")
         Assert-SelfTest ([bool]$dubious.Blocked) "Dubious ownership output was not classified."
         Assert-SelfTest ((Get-ProgressTransitionHoldMilliseconds) -eq 0) "Progress transition hold was not disabled/minimized in self-test."
-    } catch { Add-SelfTestError "v0.41 Aurora/Git/rerun stabilization self-test failed: $($_.Exception.Message)" }
+    } catch { Add-SelfTestError "v0.42 scene.blend Aurora/Git/rerun stabilization self-test failed: $($_.Exception.Message)" }
 
     try {
         Save-SetupState
@@ -10837,7 +11684,7 @@ function Run-AuroraExportExample {
         $reuse = Read-Host "Reuse the existing export and skip re-export? Y/N (default Y)"
         if ($reuse.Trim() -notmatch '^[Nn]$') {
             Write-Host "Reusing existing Aurora MR export." -ForegroundColor Green
-            Open-AuroraExportInBlender -SceneJson $existingSceneJson -ExportDir $exportDir
+            Open-AuroraSceneBlendInBlender -SceneJson $existingSceneJson -ExportDir $exportDir
             return
         }
         Write-Host "Re-exporting Aurora MR (existing export will be replaced)." -ForegroundColor Cyan
@@ -10954,7 +11801,7 @@ function Run-AuroraExportExample {
     Write-Host "Scene JSON: $sceneJson" -ForegroundColor Green
     Write-Host "File tree log: $treeLog" -ForegroundColor Green
 
-    Open-AuroraExportInBlender -SceneJson $sceneJson -ExportDir $exportDir
+    Open-AuroraSceneBlendInBlender -SceneJson $sceneJson -ExportDir $exportDir
 }
 
 # Main
