@@ -9,7 +9,7 @@ set "DG_LAUNCHER_DIR=%~dp0"
 set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
-set "DG_SCRIPT_VERSION=v0.38"
+set "DG_SCRIPT_VERSION=v0.39"
 set "DG_SCRIPT_BUILD=%DG_SCRIPT_VERSION%"
 set "DG_VERSION=%DG_SCRIPT_VERSION%"
 set "DG_STAR_CITIZEN_TESTED_BUILDS=LIVE-4.8-and-older"
@@ -867,7 +867,7 @@ $GuideRepoUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-a
 $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
-$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.38" }
+$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.39" }
 $testedBuildsFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_TESTED_BUILDS)) { [string]$env:DG_STAR_CITIZEN_TESTED_BUILDS } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { [string]$env:DG_STAR_CITIZEN_COMPAT } else { "LIVE-4.8-and-older" }
 $Script:ScriptVersion = $scriptVersionFromEnv
 $Script:InternalBuildVersion = $Script:ScriptVersion
@@ -938,6 +938,13 @@ $Script:LauncherDir = [Environment]::GetEnvironmentVariable("DG_LAUNCHER_DIR")
 $Script:ToolStates = @{}
 $Script:RepoStates = @{}
 $Script:BranchStates = New-Object 'System.Collections.Generic.List[object]'
+$Script:SmartAppControlState = "Unknown"
+$Script:SmartAppControlPolicyValue = ""
+$Script:SmartAppControlPreflightDecision = "NotChecked"
+$Script:SmartAppControlBlocked = $false
+$Script:SmartAppControlBlockedReason = ""
+$Script:SmartAppControlBlockedPattern = ""
+$Script:SmartAppControlToolInstallsSkipped = $false
 $Script:OrchestrationRepoPath = ""
 $Script:BlenderState = [ordered]@{ status = "NotStarted"; exe = ""; version = ""; installRoot = ""; userConfigRoot = ""; addonLinked = $false; addonLinkType = "" }
 $Script:P4KState = [ordered]@{ status = "NotStarted"; build = ""; source = ""; destination = ""; partialDestination = ""; sizeBytes = 0; spaceWarning = $false; readOnly = $false; skippedReason = ""; channel = ""; starCitizenExe = ""; productVersion = ""; fileVersion = "" }
@@ -1146,6 +1153,7 @@ function Initialize-SetupPlan {
     $steps.Add((New-SetupStepObject -Id "logging-env" -Name "Transcript log, setup-state initialization, and environment variables"))
 
     if ($InstallTools) {
+        $steps.Add((New-SetupStepObject -Id "smart-app-control-preflight" -Name "Check Smart App Control before developer tool installs"))
         $steps.Add((New-SetupStepObject -Id "winget-check" -Name "Validate WinGet availability"))
         $steps.Add((New-SetupStepObject -Id "install-git" -Name "Install or validate Git"))
         $steps.Add((New-SetupStepObject -Id "install-gh" -Name "Install or validate GitHub CLI"))
@@ -1504,8 +1512,17 @@ function Get-StepDependencySkipReason {
 
     $depends = @()
     switch ($Id) {
+        "winget-check"         { $depends = @("smart-app-control-preflight") }
         "install-git"          { $depends = @("winget-check") }
+        "install-gh"           { $depends = @("winget-check") }
+        "install-vsbuildtools" { $depends = @("winget-check") }
         "install-rust"         { $depends = @("winget-check") }
+        "install-python"       { $depends = @("winget-check") }
+        "install-dotnet"       { $depends = @("winget-check") }
+        "install-cmake"        { $depends = @("winget-check") }
+        "install-vscode"       { $depends = @("winget-check") }
+        "install-node-codex"   { $depends = @("winget-check") }
+        "execution-policy"     { $depends = @("winget-check") }
         "clone-repos"          { $depends = @("install-git") }
         "clone-guide-repo"     { $depends = @("install-git") }
         "write-agent-guidance" { $depends = @("clone-guide-repo") }
@@ -1829,6 +1846,15 @@ function Save-SetupState {
             lastRun = (Get-Date).ToString('s')
             devRoot = [string]$DevRoot
             isSandbox = [bool]$Script:IsSandbox
+            smartAppControl = [ordered]@{
+                state = [string]$Script:SmartAppControlState
+                policyValue = [string]$Script:SmartAppControlPolicyValue
+                preflightDecision = [string]$Script:SmartAppControlPreflightDecision
+                blocked = [bool]$Script:SmartAppControlBlocked
+                blockedReason = [string]$Script:SmartAppControlBlockedReason
+                blockedPattern = [string]$Script:SmartAppControlBlockedPattern
+                toolInstallsSkipped = [bool]$Script:SmartAppControlToolInstallsSkipped
+            }
             launcherPath = [string]$Script:LauncherPath
             launcherDir = [string]$Script:LauncherDir
             tools = @($toolList.ToArray())
@@ -1914,6 +1940,297 @@ function Test-WindowsSandbox {
         if (($env:USERNAME -eq 'WDAGUtilityAccount') -or ($cs.Model -match '(?i)Virtual|Sandbox')) { return $true }
     } catch { }
     return $false
+}
+
+function Get-SmartAppControlState {
+    $path = "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy"
+    $name = "VerifiedAndReputablePolicyState"
+    try {
+        $item = Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop
+        $raw = $item.$name
+        $state = switch ([int]$raw) {
+            0 { "Off" }
+            1 { "Enforce" }
+            2 { "Evaluation" }
+            default { "Unknown" }
+        }
+        return [pscustomobject]@{ State = $state; RawValue = [string]$raw; Reason = "" }
+    } catch {
+        return [pscustomobject]@{ State = "Unknown"; RawValue = ""; Reason = $_.Exception.Message }
+    }
+}
+
+function Test-SmartAppControlPreflightNeeded {
+    param([string]$State = "Unknown")
+    return ([string]$State -in @("Enforce", "Evaluation"))
+}
+
+function Resolve-SmartAppControlPreflightDecision {
+    param(
+        [string]$State = "Unknown",
+        [bool]$InstallToolsEnabled = $true,
+        [bool]$NonLiveMode = $false,
+        [string]$UserChoice = ""
+    )
+
+    if (-not $InstallToolsEnabled) {
+        return [pscustomobject]@{ Status = "NotNeeded"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = "Tool installation is disabled."; Choice = "" }
+    }
+    if (-not (Test-SmartAppControlPreflightNeeded -State $State)) {
+        $status = if ([string]$State -eq "Off") { "NoWarningNeeded" } else { "UnknownState" }
+        $reason = if ([string]$State -eq "Off") { "Smart App Control appears Off." } else { "Smart App Control state could not be read; no hard preflight block was applied." }
+        return [pscustomobject]@{ Status = $status; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = $reason; Choice = "" }
+    }
+    if ($NonLiveMode) {
+        return [pscustomobject]@{ Status = "NonLiveWarning"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = "Smart App Control appears $State; non-live mode recorded the warning without prompting."; Choice = "" }
+    }
+
+    $choice = ([string]$UserChoice).Trim()
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        return [pscustomobject]@{ Status = "PromptNeeded"; ShouldPrompt = $true; ShouldCancel = $false; ShouldContinue = $false; ShouldSkipTools = $false; Reason = "Smart App Control appears $State and requires an explicit user decision before tool installs."; Choice = "" }
+    }
+    switch -Regex ($choice) {
+        '^[1Cc]$' {
+            return [pscustomobject]@{ Status = "CancelForReview"; ShouldPrompt = $false; ShouldCancel = $true; ShouldContinue = $false; ShouldSkipTools = $true; Reason = "Smart App Control preflight cancelled so the user can review Windows Security settings before tool installs."; Choice = "1" }
+        }
+        '^[2Yy]$' {
+            return [pscustomobject]@{ Status = "ContinueAnyway"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = "Smart App Control appears $State; user chose to continue anyway."; Choice = "2" }
+        }
+        '^[3SsNn]$' {
+            return [pscustomobject]@{ Status = "SkipToolInstalls"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $true; Reason = "User skipped tool installs after Smart App Control preflight."; Choice = "3" }
+        }
+        default {
+            return [pscustomobject]@{ Status = "InvalidChoice"; ShouldPrompt = $true; ShouldCancel = $false; ShouldContinue = $false; ShouldSkipTools = $false; Reason = "Choose 1, 2, or 3 for the Smart App Control preflight."; Choice = $choice }
+        }
+    }
+}
+
+function Write-SmartAppControlReviewInstructions {
+    Write-Host "Open Windows Security." -ForegroundColor Cyan
+    Write-Host "Go to App & browser control." -ForegroundColor Cyan
+    Write-Host "Open Smart App Control settings." -ForegroundColor Cyan
+    Write-Host "Review whether Smart App Control is On, Evaluation, or Off." -ForegroundColor Cyan
+    Write-Host "Microsoft behavior varies by Windows build; read the Windows Security UI before changing the setting." -ForegroundColor DarkYellow
+}
+
+function Show-SmartAppControlPreflightWarning {
+    param([string]$State = "Unknown")
+    Write-Host ""
+    Write-Host "Smart App Control appears to be ON or in Evaluation mode." -ForegroundColor Yellow
+    Write-Host "This setup installs developer tools such as Git for Windows and Rust." -ForegroundColor Yellow
+    Write-Host "Windows may block those tools or their DLLs before they can run." -ForegroundColor Yellow
+    Write-Host "If this happens, setup cannot reliably continue." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "The installer cannot apply a per-app Smart App Control bypass." -ForegroundColor DarkYellow
+    Write-Host "Running as Administrator does not bypass it." -ForegroundColor DarkYellow
+    Write-Host "Defender exclusions may not bypass Smart App Control." -ForegroundColor DarkYellow
+    Write-SmartAppControlReviewInstructions
+    Write-Host ""
+    Write-Host "Choose:" -ForegroundColor Cyan
+    Write-Host "  1. Cancel now so I can review Smart App Control settings, then rerun setup" -ForegroundColor Cyan
+    Write-Host "  2. Continue anyway; I understand tool installs may be blocked" -ForegroundColor Cyan
+    Write-Host "  3. Skip tool installs and continue only with validation/steps that can use existing tools" -ForegroundColor Cyan
+    Write-Host "Recommended: 1" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+function Read-SmartAppControlPreflightDecision {
+    param([string]$State = "Unknown")
+    while ($true) {
+        Show-SmartAppControlPreflightWarning -State $State
+        $answer = Read-Host "Smart App Control choice [1/2/3, default 1]"
+        if ([string]::IsNullOrWhiteSpace($answer)) { $answer = "1" }
+        $decision = Resolve-SmartAppControlPreflightDecision -State $State -InstallToolsEnabled:$true -NonLiveMode:$false -UserChoice $answer
+        if (-not [bool]$decision.ShouldPrompt) { return $decision }
+        Write-Warning ([string]$decision.Reason)
+    }
+}
+
+function Invoke-SmartAppControlPreflight {
+    $state = Get-SmartAppControlState
+    $Script:SmartAppControlState = [string]$state.State
+    $Script:SmartAppControlPolicyValue = [string]$state.RawValue
+
+    if (-not (Test-SmartAppControlPreflightNeeded -State $Script:SmartAppControlState)) {
+        $decision = Resolve-SmartAppControlPreflightDecision -State $Script:SmartAppControlState -InstallToolsEnabled:$InstallTools -NonLiveMode:(Test-NonLiveInstallerMode)
+        $Script:SmartAppControlPreflightDecision = [string]$decision.Status
+        if ([string]$Script:SmartAppControlState -eq "Unknown") {
+            Write-Host "Smart App Control state could not be read; setup will continue with normal tool validation." -ForegroundColor DarkYellow
+        } else {
+            Write-Host "Smart App Control state: $($Script:SmartAppControlState)" -ForegroundColor Green
+        }
+        return
+    }
+
+    if (Test-NonLiveInstallerMode) {
+        $decision = Resolve-SmartAppControlPreflightDecision -State $Script:SmartAppControlState -InstallToolsEnabled:$InstallTools -NonLiveMode:$true
+    } else {
+        $decision = Read-SmartAppControlPreflightDecision -State $Script:SmartAppControlState
+    }
+
+    $Script:SmartAppControlPreflightDecision = [string]$decision.Status
+    if ([bool]$decision.ShouldCancel) {
+        $Script:SmartAppControlToolInstallsSkipped = $true
+        $Script:CurrentStepResultStatus = "FATAL"
+        $Script:CurrentStepResultReason = [string]$decision.Reason
+        return
+    }
+    if ([bool]$decision.ShouldSkipTools) {
+        $Script:SmartAppControlToolInstallsSkipped = $true
+        Set-CurrentSetupStepSkipped -Id "smart-app-control-preflight" -Name "Check Smart App Control before developer tool installs" -Reason ([string]$decision.Reason)
+        return
+    }
+    if ([string]$decision.Status -eq "ContinueAnyway" -or [string]$decision.Status -eq "NonLiveWarning") {
+        $Script:CurrentStepResultStatus = "WARN"
+        $Script:CurrentStepResultReason = [string]$decision.Reason
+        return
+    }
+}
+
+function Test-SmartAppControlBlockedOutput {
+    param(
+        [string[]]$OutputLines = @(),
+        [string]$ToolName = "developer tool"
+    )
+
+    $text = (@($OutputLines) | ForEach-Object { [string]$_ }) -join "`n"
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [pscustomobject]@{ Blocked = $false; Pattern = ""; Reason = "" }
+    }
+
+    $patterns = @(
+        "Smart App Control",
+        "Windows Defender SecurityCenter",
+        "Part of this app has been blocked",
+        "app has been blocked",
+        "could not verify its publisher",
+        "msys-2.0.dll",
+        "libintl-8.dll",
+        "libpcre2",
+        "libiconv",
+        "libwinpthread",
+        "Bad Image",
+        "error status 0xc0e90002",
+        "0xc0e90002",
+        "bash.exe",
+        "rustup-init.exe",
+        "unable to load",
+        "not designed to run on Windows",
+        "contains an error"
+    )
+
+    foreach ($pattern in $patterns) {
+        if ($text -match ("(?i)" + [regex]::Escape($pattern))) {
+            $reason = "Windows Security / Smart App Control appears to have blocked components needed by $ToolName (matched '$pattern'). Setup cannot reliably continue until Windows allows the blocked developer tools to run. Review Windows Security > App & browser control > Smart App Control settings, then rerun setup."
+            return [pscustomobject]@{ Blocked = $true; Pattern = $pattern; Reason = $reason }
+        }
+    }
+
+    return [pscustomobject]@{ Blocked = $false; Pattern = ""; Reason = "" }
+}
+
+function Set-SmartAppControlBlocked {
+    param(
+        [string]$Reason = "",
+        [string]$Pattern = "",
+        [string]$ToolName = "developer tool"
+    )
+    if ([string]::IsNullOrWhiteSpace($Reason)) {
+        $Reason = "Windows Security / Smart App Control blocked components needed by $ToolName. Setup cannot reliably continue until the blocked tools can run."
+    }
+    $Script:SmartAppControlBlocked = $true
+    $Script:SmartAppControlBlockedReason = $Reason
+    $Script:SmartAppControlBlockedPattern = $Pattern
+    $Script:SmartAppControlToolInstallsSkipped = $true
+}
+
+function Set-SmartAppControlBlockedFromOutput {
+    param(
+        [string[]]$OutputLines = @(),
+        [string]$ToolName = "developer tool"
+    )
+    $blocked = Test-SmartAppControlBlockedOutput -OutputLines $OutputLines -ToolName $ToolName
+    if ([bool]$blocked.Blocked) {
+        Set-SmartAppControlBlocked -Reason ([string]$blocked.Reason) -Pattern ([string]$blocked.Pattern) -ToolName $ToolName
+        return $true
+    }
+    return $false
+}
+
+function Get-SmartAppControlToolSkipReason {
+    if ($Script:SmartAppControlBlocked) {
+        if (-not [string]::IsNullOrWhiteSpace($Script:SmartAppControlBlockedReason)) { return [string]$Script:SmartAppControlBlockedReason }
+        return "Smart App Control blocked a developer tool, so remaining tool installs were skipped."
+    }
+    if ($Script:SmartAppControlToolInstallsSkipped) {
+        return "Tool installs were skipped after Smart App Control preflight."
+    }
+    return ""
+}
+
+function Get-ToolStateNameForSetupStep {
+    param([string]$StepId)
+    switch ([string]$StepId) {
+        "winget-check" { return "winget" }
+        "install-git" { return "git" }
+        "install-gh" { return "gh" }
+        "install-vsbuildtools" { return "vsbuildtools" }
+        "install-rust" { return "rust" }
+        "install-python" { return "python" }
+        "install-dotnet" { return "dotnet" }
+        "install-cmake" { return "cmake" }
+        "install-vscode" { return "vscode" }
+        "install-node-codex" { return "node-codex" }
+        "execution-policy" { return "powershell-execution-policy" }
+        default { return [string]$StepId }
+    }
+}
+
+function Invoke-ToolSetupStep {
+    param(
+        [Parameter(Mandatory=$true)][string]$Id,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][scriptblock]$ScriptBlock,
+        [switch]$Fatal
+    )
+    if ($Script:SmartAppControlBlocked -or $Script:SmartAppControlToolInstallsSkipped) {
+        $reason = Get-SmartAppControlToolSkipReason
+        $toolName = Get-ToolStateNameForSetupStep -StepId $Id
+        Invoke-SetupStep -Id $Id -Name $Name -Fatal:$Fatal -ScriptBlock {
+            Set-ToolState -Name $toolName -Status "SKIPPED" -Source "smart-app-control" -Reason $reason -InstallNeeded $true
+            Set-CurrentSetupStepSkipped -Id $Id -Name $Name -Reason $reason
+        }
+        return
+    }
+    Invoke-SetupStep -Id $Id -Name $Name -Fatal:$Fatal -ScriptBlock $ScriptBlock
+}
+
+function Test-StopCurrentToolStepForSmartAppControlBlock {
+    param(
+        [string]$ToolStateName = "",
+        [string]$ToolDisplayName = "developer tool"
+    )
+    if (-not $Script:SmartAppControlBlocked) { return $false }
+    $reason = Get-SmartAppControlToolSkipReason
+    if (-not [string]::IsNullOrWhiteSpace($ToolStateName)) {
+        Set-ToolState -Name $ToolStateName -Status "Blocked" -Source "smart-app-control" -Reason $reason -InstallNeeded $true
+    }
+    $Script:CurrentStepResultStatus = "FAILED"
+    $Script:CurrentStepResultReason = $reason
+    Write-Warning $reason
+    return $true
+}
+
+function Write-SmartAppControlBlockedSummary {
+    if (-not $Script:SmartAppControlBlocked) { return }
+    Write-Host ""
+    Write-Host "Smart App Control / Windows Security blocked one or more developer tool components." -ForegroundColor Red
+    Write-Host "Setup cannot reliably continue until the blocked tools are allowed to run." -ForegroundColor Red
+    Write-Host "Review Windows Security > App & browser control > Smart App Control settings, then rerun setup." -ForegroundColor Yellow
+    Write-Host "Completed steps will be revalidated and skipped where possible." -ForegroundColor Yellow
+    if (-not [string]::IsNullOrWhiteSpace($Script:SmartAppControlBlockedReason)) {
+        Write-Host ("Reason: " + $Script:SmartAppControlBlockedReason) -ForegroundColor DarkYellow
+    }
 }
 
 function Register-SetupCancelHandler {
@@ -3869,6 +4186,12 @@ function Invoke-MonitoredProcessWait {
     Add-Content -LiteralPath $commandLog -Value "`r`nFINISHED: $((Get-Date).ToString('s'))`r`nEXIT CODE: $exitCode" -Encoding UTF8
 
     $finalStatus = if ($SuccessExitCodes -contains $exitCode) { "COMPLETE" } else { "FAILED" }
+    if (-not ($SuccessExitCodes -contains $exitCode)) {
+        try {
+            $tail = @(Get-SafeTextFileTail -Path $commandLog -MaxLines 80)
+            [void](Set-SmartAppControlBlockedFromOutput -OutputLines $tail -ToolName ([IO.Path]::GetFileName($FilePath)))
+        } catch { }
+    }
     # Use the final-phase note if a callback was supplied, otherwise the static one.
     $finalNote = $ActivityNote
     if ($null -ne $NoteCallback) {
@@ -4584,6 +4907,7 @@ function Run-Native {
             if (-not [string]::IsNullOrWhiteSpace([string]$line)) { Write-Host ("      " + [string]$line) -ForegroundColor DarkGray }
         }
         if (($exitCode -ne 0) -and (-not $IgnoreExitCode)) {
+            [void](Set-SmartAppControlBlockedFromOutput -OutputLines $commandOutput -ToolName $leaf)
             throw "Command failed with exit code ${exitCode}: $display"
         }
         return
@@ -4596,6 +4920,7 @@ function Run-Native {
         $exitCode = $LASTEXITCODE
         if ($null -eq $exitCode) { $exitCode = 0 }
         if (($exitCode -ne 0) -and (-not $IgnoreExitCode)) {
+            [void](Set-SmartAppControlBlockedFromOutput -OutputLines @("Interactive command failed with exit code ${exitCode}: $display") -ToolName $leaf)
             throw "Command failed with exit code ${exitCode}: $display"
         }
         return
@@ -4610,6 +4935,10 @@ function Run-Native {
     } else {
         Write-Host "    command failed. See log: $commandLog" -ForegroundColor Red
         Write-CommandTail -Path $commandLog -MaxLines 12
+        try {
+            $tail = @(Get-SafeTextFileTail -Path $commandLog -MaxLines 80)
+            [void](Set-SmartAppControlBlockedFromOutput -OutputLines $tail -ToolName $leaf)
+        } catch { }
     }
 
     if (($exitCode -ne 0) -and (-not $IgnoreExitCode)) {
@@ -4619,35 +4948,7 @@ function Run-Native {
 
 function Test-GitBlockedComponentOutput {
     param([string[]]$OutputLines = @())
-
-    $text = (@($OutputLines) | ForEach-Object { [string]$_ }) -join "`n"
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        return [pscustomobject]@{ Blocked = $false; Pattern = ""; Reason = "" }
-    }
-
-    $patterns = @(
-        "Smart App Control",
-        "Part of this app has been blocked",
-        "msys-2.0.dll",
-        "libintl-8.dll",
-        "libpcre2",
-        "Bad Image",
-        "error status 0xc0e90002",
-        "0xc0e90002",
-        "bash.exe",
-        "unable to load",
-        "not designed to run on Windows",
-        "contains an error"
-    )
-
-    foreach ($pattern in $patterns) {
-        if ($text -match ("(?i)" + [regex]::Escape($pattern))) {
-            $reason = "Git for Windows appears blocked or broken by Windows security/trust controls (matched '$pattern'). Review Windows Security / Smart App Control settings or install Git from a trusted source; setup cannot reliably continue until Git works."
-            return [pscustomobject]@{ Blocked = $true; Pattern = $pattern; Reason = $reason }
-        }
-    }
-
-    return [pscustomobject]@{ Blocked = $false; Pattern = ""; Reason = "" }
+    return (Test-SmartAppControlBlockedOutput -OutputLines $OutputLines -ToolName "Git for Windows")
 }
 
 function New-GitHealthCheckResultFromCommandResults {
@@ -4790,6 +5091,10 @@ function Run-ProcessWait {
     } else {
         Write-Host "    process finished with exit code $exitCode. See log: $commandLog" -ForegroundColor Yellow
         Write-CommandTail -Path $commandLog -MaxLines 12
+        try {
+            $tail = @(Get-SafeTextFileTail -Path $commandLog -MaxLines 80)
+            [void](Set-SmartAppControlBlockedFromOutput -OutputLines $tail -ToolName ([IO.Path]::GetFileName($FilePath)))
+        } catch { }
     }
 
     if (($exitCode -ne 0) -and (-not $IgnoreExitCode)) {
@@ -6118,7 +6423,7 @@ function Show-WingetRecoveryHelp {
 function Install-BaseTools {
     Write-Step "Installing base tools and runtimes"
 
-    Invoke-SetupStep -Id "winget-check" -Name "Validate WinGet availability" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "winget-check" -Name "Validate WinGet availability" -ScriptBlock {
         $wingetCmd = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($null -eq $wingetCmd) {
             Show-WingetRecoveryHelp
@@ -6128,12 +6433,17 @@ function Install-BaseTools {
         Run-Native -Exe $wingetCmd.Source -Arguments @("--version") -IgnoreExitCode
     }
 
-    Invoke-SetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
         $gitCmd = Get-Command git -ErrorAction SilentlyContinue
         if ($gitCmd) {
             Write-Host "Git is already available. Running local health checks before repo work." -ForegroundColor Green
         } else {
-            Install-WingetPackage -Id "Git.Git"
+            try {
+                Install-WingetPackage -Id "Git.Git"
+            } catch {
+                if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "git" -ToolDisplayName "Git for Windows") { return }
+                throw
+            }
         }
 
         Add-UserPath "C:\Program Files\Git\cmd"
@@ -6153,6 +6463,9 @@ function Install-BaseTools {
             if (-not [string]::IsNullOrWhiteSpace([string]$health.OutputSummary)) {
                 Write-Warning ("Git health output: {0}" -f [string]$health.OutputSummary)
             }
+            if ([string]$health.Status -eq "Blocked") {
+                Set-SmartAppControlBlocked -Reason ([string]$health.Reason) -Pattern ([string]$health.Pattern) -ToolName "Git for Windows"
+            }
             Set-ToolState -Name "git" -Status ([string]$health.Status) -Path $gitExe -Version ([string]$health.Version) -Source "local" -Reason ([string]$health.Reason) -LocalValidated $false
             $Script:CurrentStepResultStatus = "FAILED"
             $Script:CurrentStepResultReason = [string]$health.Reason
@@ -6165,15 +6478,15 @@ function Install-BaseTools {
         Update-WingetPackageIfInstalled -Id "Git.Git" | Out-Null
     }
 
-    Invoke-SetupStep -Id "install-gh" -Name "Install or validate GitHub CLI" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-gh" -Name "Install or validate GitHub CLI" -ScriptBlock {
         Install-GitHubCliIntoDevRoot
     }
 
-    Invoke-SetupStep -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -ScriptBlock {
         Install-VSBuildToolsPassive
     }
 
-    Invoke-SetupStep -Id "install-rust" -Name "Install or validate Rust" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-rust" -Name "Install or validate Rust" -ScriptBlock {
         Set-UserEnv "CARGO_HOME" $CargoHome
         Set-UserEnv "RUSTUP_HOME" $RustupHome
         Add-UserPath (Join-Path $CargoHome "bin")
@@ -6185,44 +6498,52 @@ function Install-BaseTools {
             Run-Native -Exe "rustup" -Arguments @("--version") -IgnoreExitCode
             Run-Native -Exe "cargo" -Arguments @("--version") -IgnoreExitCode
             Run-Native -Exe "rustc" -Arguments @("--version") -IgnoreExitCode
+            if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "rust" -ToolDisplayName "Rust") { return }
             return
         } elseif ($rustupCmd) {
             Write-Host "rustup is available but cargo/rustc are not fully visible. Selecting stable toolchain without a network update." -ForegroundColor Yellow
             Run-Native -Exe "rustup" -Arguments @("default", "stable") -IgnoreExitCode
+            if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "rust" -ToolDisplayName "Rust") { return }
         } else {
-            Install-WingetPackage -Id "Rustlang.Rustup"
+            try {
+                Install-WingetPackage -Id "Rustlang.Rustup"
+            } catch {
+                if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "rust" -ToolDisplayName "Rust") { return }
+                throw
+            }
         }
         if (Get-Command rustup -ErrorAction SilentlyContinue) {
             Run-Native -Exe "rustup" -Arguments @("default", "stable") -IgnoreExitCode
             Run-Native -Exe "rustup" -Arguments @("--version") -IgnoreExitCode
             Run-Native -Exe "cargo" -Arguments @("--version") -IgnoreExitCode
             Run-Native -Exe "rustc" -Arguments @("--version") -IgnoreExitCode
+            if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "rust" -ToolDisplayName "Rust") { return }
         } else {
             Write-Warning "rustup was not found on PATH after installation. Open a new terminal or re-run this script if the Rust installer just completed."
         }
     }
 
-    Invoke-SetupStep -Id "install-python" -Name "Install Python and shared venv" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-python" -Name "Install Python and shared venv" -ScriptBlock {
         Install-PythonIntoDevRoot
     }
 
-    Invoke-SetupStep -Id "install-dotnet" -Name "Install .NET SDKs" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-dotnet" -Name "Install .NET SDKs" -ScriptBlock {
         Install-DotNetIntoDevRoot
     }
 
-    Invoke-SetupStep -Id "install-cmake" -Name "Install CMake" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-cmake" -Name "Install CMake" -ScriptBlock {
         Install-CMakeIntoDevRoot
     }
 
-    Invoke-SetupStep -Id "install-vscode" -Name "Install or validate VS Code" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-vscode" -Name "Install or validate VS Code" -ScriptBlock {
         Ensure-VSCodeAvailable | Out-Null
     }
 
-    Invoke-SetupStep -Id "install-node-codex" -Name "Install Node.js, npm cache, and optional Codex CLI" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "install-node-codex" -Name "Install Node.js, npm cache, and optional Codex CLI" -ScriptBlock {
         Install-NodeIntoDevRoot
     }
 
-    Invoke-SetupStep -Id "execution-policy" -Name "Set CurrentUser PowerShell execution policy" -ScriptBlock {
+    Invoke-ToolSetupStep -Id "execution-policy" -Name "Set CurrentUser PowerShell execution policy" -ScriptBlock {
         try {
             Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
         } catch {
@@ -8152,6 +8473,13 @@ function Show-SetupOutcomeSummary {
     }
     Write-Host "================================================================" -ForegroundColor DarkCyan
 
+    Write-SmartAppControlBlockedSummary
+    if ((-not $Script:SmartAppControlBlocked) -and $Script:SmartAppControlToolInstallsSkipped) {
+        Write-Host ""
+        Write-Host "Tool installs were skipped after Smart App Control preflight." -ForegroundColor Yellow
+        Write-Host "Steps that require missing developer tools will be skipped by dependency checks." -ForegroundColor Yellow
+    }
+
     if ($failureCount -gt 0) {
         Write-Host "FAILED STEPS:" -ForegroundColor Red
         foreach ($f in $failures) {
@@ -8204,6 +8532,7 @@ function Show-SetupOutcomeSummary {
                 "Installed" { "Green" }
                 "InstallNeeded" { "Yellow" }
                 "NetworkBlocked" { "Red" }
+                "Blocked" { "Red" }
                 default { "DarkYellow" }
             }
             Write-Host ("  - {0}: {1}" -f [string]$tool.name, $status) -ForegroundColor $color
@@ -8244,6 +8573,10 @@ function Show-SetupOutcomeSummary {
 
 function Run-FinalVerification {
     Write-Step "Final verification summary"
+    if ($Script:SmartAppControlBlocked) {
+        Write-SmartAppControlBlockedSummary
+        return
+    }
     $items = @(
         @{ Name="git"; Path="git"; Args=@("--version") },
         @{ Name="gh"; Path=(Join-Path $GhRoot "bin\gh.exe"); Args=@("--version") },
@@ -8736,6 +9069,159 @@ function Invoke-SelfTest {
         $promptDecision = Resolve-VSBuildToolsInstallDecision
         Assert-SelfTest ([string]$promptDecision.Status -eq "PromptNeeded" -and [bool]$promptDecision.ShouldPrompt) "Build Tools missing decision did not require an explicit prompt."
     } catch { Add-SelfTestError "Build Tools decision helper self-test failed: $($_.Exception.Message)" }
+
+    try {
+        $offDecision = Resolve-SmartAppControlPreflightDecision -State "Off" -InstallToolsEnabled $true
+        Assert-SelfTest ([string]$offDecision.Status -eq "NoWarningNeeded" -and -not [bool]$offDecision.ShouldPrompt) "SAC Off incorrectly required a preflight warning."
+
+        $enforceDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true
+        Assert-SelfTest ([string]$enforceDecision.Status -eq "PromptNeeded" -and [bool]$enforceDecision.ShouldPrompt) "SAC Enforce did not require a preflight decision."
+
+        $evaluationDecision = Resolve-SmartAppControlPreflightDecision -State "Evaluation" -InstallToolsEnabled $true
+        Assert-SelfTest ([string]$evaluationDecision.Status -eq "PromptNeeded" -and [bool]$evaluationDecision.ShouldPrompt) "SAC Evaluation did not require a preflight decision."
+
+        $unknownDecision = Resolve-SmartAppControlPreflightDecision -State "Unknown" -InstallToolsEnabled $true
+        Assert-SelfTest ([string]$unknownDecision.Status -eq "UnknownState" -and -not [bool]$unknownDecision.ShouldPrompt -and [bool]$unknownDecision.ShouldContinue) "SAC Unknown did not continue without a hard block."
+
+        $cancelDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true -UserChoice "1"
+        Assert-SelfTest ([string]$cancelDecision.Status -eq "CancelForReview" -and [bool]$cancelDecision.ShouldCancel -and [bool]$cancelDecision.ShouldSkipTools) "SAC option 1 did not cancel for review and skip tool phase."
+
+        $continueDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true -UserChoice "2"
+        Assert-SelfTest ([string]$continueDecision.Status -eq "ContinueAnyway" -and [bool]$continueDecision.ShouldContinue -and -not [bool]$continueDecision.ShouldSkipTools) "SAC option 2 did not continue anyway."
+
+        $skipDecision = Resolve-SmartAppControlPreflightDecision -State "Evaluation" -InstallToolsEnabled $true -UserChoice "3"
+        Assert-SelfTest ([string]$skipDecision.Status -eq "SkipToolInstalls" -and [bool]$skipDecision.ShouldSkipTools) "SAC option 3 did not skip tool installs."
+
+        $nonLiveDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true -NonLiveMode $true
+        Assert-SelfTest ([string]$nonLiveDecision.Status -eq "NonLiveWarning" -and -not [bool]$nonLiveDecision.ShouldPrompt) "SAC non-live decision tried to prompt."
+
+        $blockedGitDll = Test-SmartAppControlBlockedOutput -ToolName "Git for Windows" -OutputLines @(
+            "Part of this app has been blocked by Smart App Control.",
+            "msys-2.0.dll"
+        )
+        Assert-SelfTest ([bool]$blockedGitDll.Blocked -and [string]$blockedGitDll.Pattern -eq "Smart App Control") "SAC Git DLL block output was not detected."
+
+        $blockedRustup = Test-SmartAppControlBlockedOutput -ToolName "Rust" -OutputLines @(
+            "rustup-init.exe",
+            "Windows Defender SecurityCenter",
+            "error status 0xc0e90002"
+        )
+        Assert-SelfTest ([bool]$blockedRustup.Blocked -and [string]$blockedRustup.Pattern -eq "Windows Defender SecurityCenter") "SAC rustup-init block output was not detected."
+
+        $cleanSacOutput = Test-SmartAppControlBlockedOutput -ToolName "Git for Windows" -OutputLines @("git version 2.45.0.windows.1")
+        Assert-SelfTest (-not [bool]$cleanSacOutput.Blocked) "Clean tool output was incorrectly detected as SAC blocked."
+    } catch { Add-SelfTestError "Smart App Control decision/output helper self-test failed: $($_.Exception.Message)" }
+
+    try {
+        $oldSteps = $Script:SetupSteps
+        $oldLookup = $Script:SetupStepLookup
+        $oldTimings = $Script:StepTimings
+        $oldSkips = $Script:SetupSkips
+        $oldFailures = $Script:SetupFailures
+        $oldToolStates = $Script:ToolStates
+        $oldFatal = $Script:FatalFailure
+        $oldSetupStatePath = $Script:SetupStatePath
+        $oldCurrentStepId = $Script:CurrentStepId
+        $oldCurrentStepName = $Script:CurrentStepName
+        $oldCurrentStepNumber = $Script:CurrentStepNumber
+        $oldCurrentCompletedBefore = $Script:CurrentCompletedBefore
+        $oldSmartAppControlState = $Script:SmartAppControlState
+        $oldSmartAppControlPolicyValue = $Script:SmartAppControlPolicyValue
+        $oldSmartAppControlPreflightDecision = $Script:SmartAppControlPreflightDecision
+        $oldSmartAppControlBlocked = $Script:SmartAppControlBlocked
+        $oldSmartAppControlBlockedReason = $Script:SmartAppControlBlockedReason
+        $oldSmartAppControlBlockedPattern = $Script:SmartAppControlBlockedPattern
+        $oldSmartAppControlToolInstallsSkipped = $Script:SmartAppControlToolInstallsSkipped
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:ToolStates = @{}
+        $Script:FatalFailure = $false
+        $Script:SetupStatePath = Join-Path $Script:HarnessRoot "smart-app-control-tests\setup-state.json"
+        $Script:SmartAppControlState = "Enforce"
+        $Script:SmartAppControlPolicyValue = "1"
+        $Script:SmartAppControlPreflightDecision = "HarnessSynthetic"
+        $Script:SmartAppControlBlocked = $false
+        $Script:SmartAppControlBlockedReason = ""
+        $Script:SmartAppControlBlockedPattern = ""
+        $Script:SmartAppControlToolInstallsSkipped = $false
+        $Script:SetupSteps = @(
+            (New-SetupStepObject -Id "smart-app-control-preflight" -Name "Check Smart App Control before developer tool installs"),
+            (New-SetupStepObject -Id "winget-check" -Name "Validate WinGet availability"),
+            (New-SetupStepObject -Id "install-git" -Name "Install or validate Git"),
+            (New-SetupStepObject -Id "install-rust" -Name "Install or validate Rust"),
+            (New-SetupStepObject -Id "install-python" -Name "Install Python and shared venv"),
+            (New-SetupStepObject -Id "clone-repos" -Name "Clone or validate community repositories"),
+            (New-SetupStepObject -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches"),
+            (New-SetupStepObject -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP")
+        )
+        $Script:SetupStepLookup = @{}
+        for ($i = 0; $i -lt $Script:SetupSteps.Count; $i++) { $Script:SetupStepLookup[$Script:SetupSteps[$i].Id] = ($i + 1) }
+
+        Invoke-SetupStep -Id "smart-app-control-preflight" -Name "Check Smart App Control before developer tool installs" -ScriptBlock { }
+        Invoke-ToolSetupStep -Id "winget-check" -Name "Validate WinGet availability" -ScriptBlock { }
+        Invoke-ToolSetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
+            [void](Set-SmartAppControlBlockedFromOutput -ToolName "Git for Windows" -OutputLines @("Bad Image", "msys-2.0.dll", "error status 0xc0e90002"))
+            if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "git" -ToolDisplayName "Git for Windows") { return }
+        }
+        Assert-SelfTest ([bool]$Script:SmartAppControlBlocked) "Synthetic Git DLL block did not set SmartAppControlBlocked."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "install-git" -Status "FAILED") -eq 1) "SAC-blocked Git tool step was not recorded as FAILED."
+        Assert-SelfTest (@($Script:ToolStates.Keys | Where-Object { $_ -eq "git" }).Count -eq 1 -and [string]$Script:ToolStates["git"].status -eq "Blocked") "SAC-blocked Git did not record blocked ToolState."
+
+        Invoke-ToolSetupStep -Id "install-rust" -Name "Install or validate Rust" -ScriptBlock { throw "Rust installer should have been skipped after SAC block" }
+        Invoke-ToolSetupStep -Id "install-python" -Name "Install Python and shared venv" -ScriptBlock { throw "Python installer should have been skipped after SAC block" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "install-rust" -Status "SKIPPED") -eq 1) "Rust tool step was not skipped after SAC block."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "install-python" -Status "SKIPPED") -eq 1) "Python tool step was not skipped after SAC block."
+
+        Invoke-SetupStep -Id "clone-repos" -Name "Clone or validate community repositories" -ScriptBlock { throw "clone-repos should skip after SAC-blocked Git" }
+        Invoke-SetupStep -Id "setup-git-versioning" -Name "Initialize local Git versioning and safe development branches" -ScriptBlock { throw "setup-git-versioning should skip after SAC-blocked Git" }
+        Invoke-SetupStep -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP" -ScriptBlock { throw "build-starbreaker should skip after SAC-blocked tool phase" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "clone-repos" -Status "SKIPPED") -eq 1) "Repo clone step did not skip after SAC block."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "setup-git-versioning" -Status "SKIPPED") -eq 1) "Git versioning step did not skip after SAC block."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "build-starbreaker" -Status "SKIPPED") -eq 1) "Build step did not skip after SAC block."
+
+        $state = Get-Content -LiteralPath $Script:SetupStatePath -Raw | ConvertFrom-Json
+        Assert-SelfTest ([bool]$state.smartAppControl.blocked) "Setup-state did not persist SmartAppControl blocked state."
+        Assert-SelfTest ([string]$state.smartAppControl.blockedPattern -eq "msys-2.0.dll") "Setup-state did not persist SAC blocked pattern."
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:ToolStates = @{}
+        $Script:SmartAppControlBlocked = $false
+        $Script:SmartAppControlBlockedReason = ""
+        $Script:SmartAppControlBlockedPattern = ""
+        $Script:SmartAppControlToolInstallsSkipped = $false
+        Invoke-ToolSetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
+            [void](Set-SmartAppControlBlockedFromOutput -ToolName "Rust" -OutputLines @("rustup-init.exe", "Part of this app has been blocked", "error status 0xc0e90002"))
+            if (Test-StopCurrentToolStepForSmartAppControlBlock -ToolStateName "rust" -ToolDisplayName "Rust") { return }
+        }
+        Assert-SelfTest ([bool]$Script:SmartAppControlBlocked -and [string]$Script:SmartAppControlBlockedPattern -eq "Part of this app has been blocked") "Synthetic rustup-init block did not set SAC blocked pattern."
+    } catch { Add-SelfTestError "Smart App Control tool-brake self-test failed: $($_.Exception.Message)" }
+    finally {
+        $Script:SetupSteps = $oldSteps
+        $Script:SetupStepLookup = $oldLookup
+        $Script:StepTimings = $oldTimings
+        $Script:SetupSkips = $oldSkips
+        $Script:SetupFailures = $oldFailures
+        $Script:ToolStates = $oldToolStates
+        $Script:FatalFailure = $oldFatal
+        $Script:SetupStatePath = $oldSetupStatePath
+        $Script:CurrentStepId = $oldCurrentStepId
+        $Script:CurrentStepName = $oldCurrentStepName
+        $Script:CurrentStepNumber = $oldCurrentStepNumber
+        $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
+        $Script:SmartAppControlState = $oldSmartAppControlState
+        $Script:SmartAppControlPolicyValue = $oldSmartAppControlPolicyValue
+        $Script:SmartAppControlPreflightDecision = $oldSmartAppControlPreflightDecision
+        $Script:SmartAppControlBlocked = $oldSmartAppControlBlocked
+        $Script:SmartAppControlBlockedReason = $oldSmartAppControlBlockedReason
+        $Script:SmartAppControlBlockedPattern = $oldSmartAppControlBlockedPattern
+        $Script:SmartAppControlToolInstallsSkipped = $oldSmartAppControlToolInstallsSkipped
+        $Script:CurrentStepResultStatus = ""
+        $Script:CurrentStepResultReason = ""
+    }
 
     try {
         $oldSteps = $Script:SetupSteps
@@ -9625,7 +10111,12 @@ try {
         Start-SetupTranscriptAndEnvironment
     }
 
-    if ($InstallTools) { Install-BaseTools }
+    if ($InstallTools) {
+        Invoke-SetupStep -Id "smart-app-control-preflight" -Name "Check Smart App Control before developer tool installs" -Fatal -ScriptBlock {
+            Invoke-SmartAppControlPreflight
+        }
+        Install-BaseTools
+    }
     if ($CloneRepos) {
         Invoke-SetupStep -Id "clone-repos" -Name "Clone or validate community repositories" -ScriptBlock { Sync-Repositories }
         Invoke-SetupStep -Id "clone-guide-repo" -Name "Clone or validate DirectorGunner tutorial repository" -ScriptBlock { Sync-GuideRepository }
