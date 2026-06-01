@@ -10,7 +10,7 @@ set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
 set "DG_VERSION=v1.51"
-set "DG_SCRIPT_BUILD=v0.36"
+set "DG_SCRIPT_BUILD=v0.37"
 set "DG_STAR_CITIZEN_COMPAT=4.8-and-older"
 set "DG_CLI_SKIPTOOLS=0"
 set "DG_CLI_SELFTEST=0"
@@ -860,7 +860,7 @@ $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
 $Script:ReleaseVersion = if ([string]::IsNullOrWhiteSpace($env:DG_VERSION)) { "v1.51" } else { [string]$env:DG_VERSION }
-$Script:InternalBuildVersion = if ([string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { "v0.36" } else { [string]$env:DG_SCRIPT_BUILD }
+$Script:InternalBuildVersion = if ([string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { "v0.37" } else { [string]$env:DG_SCRIPT_BUILD }
 $Script:StarCitizenCompatibility = if ([string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { "4.8-and-older" } else { [string]$env:DG_STAR_CITIZEN_COMPAT }
 $Script:VSCodeCommandPath = $null
 $Script:SetupSteps = @()
@@ -1446,6 +1446,46 @@ function Set-CurrentSetupStepSkipped {
     $Script:CurrentStepResultReason = $Reason
 }
 
+function Get-SetupSkipReason {
+    param([string]$Id)
+    if ([string]::IsNullOrWhiteSpace($Id)) { return "" }
+    try {
+        $matches = @($Script:SetupSkips | Where-Object { [string]$_.Id -eq $Id } | Select-Object -Last 1)
+        if ($matches.Count -gt 0) { return [string]$matches[0].Reason }
+    } catch { }
+    return ""
+}
+
+function Test-BuildToolsSkippedByUserChoice {
+    $reason = Get-SetupSkipReason -Id "install-vsbuildtools"
+    if ((Get-RecordedStepStatus -Id "install-vsbuildtools") -eq "SKIPPED" -and $reason -eq "Build Tools skipped by user choice.") { return $true }
+    try {
+        if ($Script:ToolStates.ContainsKey("vsbuildtools")) {
+            $tool = $Script:ToolStates["vsbuildtools"]
+            return (([string]$tool.status -eq "SKIPPED") -and ([string]$tool.reason -eq "Build Tools skipped by user choice."))
+        }
+    } catch { }
+    return $false
+}
+
+function Get-StarBreakerReleaseBinaryState {
+    param([string]$StarBreakerRoot = "")
+    if ([string]::IsNullOrWhiteSpace($StarBreakerRoot)) { $StarBreakerRoot = Join-Path $StarCitizenRoot "StarBreaker" }
+    $starbreakerExe = Join-Path $StarBreakerRoot "target\release\starbreaker.exe"
+    $mcpExe = Join-Path $StarBreakerRoot "target\release\starbreaker-mcp.exe"
+    return [pscustomobject]@{
+        Ready = ((Test-Path -LiteralPath $starbreakerExe) -and (Test-Path -LiteralPath $mcpExe))
+        StarBreakerRoot = $StarBreakerRoot
+        StarBreakerExe = $starbreakerExe
+        McpExe = $mcpExe
+    }
+}
+
+function Test-StarBreakerReleaseBinariesReady {
+    param([string]$StarBreakerRoot = "")
+    return [bool](Get-StarBreakerReleaseBinaryState -StarBreakerRoot $StarBreakerRoot).Ready
+}
+
 function Get-StepDependencySkipReason {
     param([string]$Id)
 
@@ -1473,6 +1513,10 @@ function Get-StepDependencySkipReason {
 
     $blocked = New-Object 'System.Collections.Generic.List[string]'
     foreach ($dep in $depends) {
+        if ($Id -eq "build-starbreaker" -and $dep -eq "install-vsbuildtools" -and (Test-BuildToolsSkippedByUserChoice)) {
+            if (Test-StarBreakerReleaseBinariesReady) { continue }
+            return "Skipped because Build Tools were skipped by user choice and no existing StarBreaker release binaries were available to reuse."
+        }
         if (Test-SetupStepFailedOrSkipped -Id $dep) { [void]$blocked.Add($dep) }
     }
     if ($blocked.Count -gt 0) {
@@ -5632,6 +5676,79 @@ Do NOT close either window unless you have decided to abort. To abort cleanly pr
 "@.Trim()
 }
 
+function Resolve-VSBuildToolsInstallDecision {
+    param(
+        [bool]$AlreadyValid = $false,
+        [bool]$PartialDetected = $false,
+        [bool]$AssumeYesEnabled = $false,
+        [bool]$NonLiveMode = $false,
+        [string]$UserChoice = ""
+    )
+
+    if ($AlreadyValid) {
+        return [pscustomobject]@{
+            Status = "ValidAlready"; ShouldPrompt = $false; ShouldInstall = $false; Skipped = $false
+            Reason = "Visual Studio Build Tools already validated."; Source = "local"
+        }
+    }
+    if ($NonLiveMode) {
+        return [pscustomobject]@{
+            Status = "NonLiveSkipped"; ShouldPrompt = $false; ShouldInstall = $false; Skipped = $true
+            Reason = "Build Tools install skipped in safe non-live mode."; Source = "non-live"
+        }
+    }
+    if ($AssumeYesEnabled) {
+        return [pscustomobject]@{
+            Status = "Approved"; ShouldPrompt = $false; ShouldInstall = $true; Skipped = $false
+            Reason = "Build Tools install approved by -AssumeYes."; Source = "assume-yes"
+        }
+    }
+
+    $choice = ([string]$UserChoice).Trim()
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        return [pscustomobject]@{
+            Status = "PromptNeeded"; ShouldPrompt = $true; ShouldInstall = $false; Skipped = $false
+            Reason = "Build Tools install requires explicit user confirmation."; Source = "prompt"
+        }
+    }
+    if ($choice -match '^[Yy]$') {
+        return [pscustomobject]@{
+            Status = "Approved"; ShouldPrompt = $false; ShouldInstall = $true; Skipped = $false
+            Reason = "Build Tools install approved by user choice."; Source = "user-choice"
+        }
+    }
+    if ($choice -match '^[Nn]$') {
+        return [pscustomobject]@{
+            Status = "UserSkipped"; ShouldPrompt = $false; ShouldInstall = $false; Skipped = $true
+            Reason = "Build Tools skipped by user choice."; Source = "user-choice"
+        }
+    }
+    return [pscustomobject]@{
+        Status = "InvalidChoice"; ShouldPrompt = $true; ShouldInstall = $false; Skipped = $false
+        Reason = "Type Y or N to choose Build Tools install behavior."; Source = "prompt"
+    }
+}
+
+function Read-VSBuildToolsInstallDecision {
+    param([bool]$PartialDetected = $false)
+
+    Write-Host "" -ForegroundColor Yellow
+    Write-Host "Visual Studio Build Tools is required to build StarBreaker from source." -ForegroundColor Yellow
+    Write-Host "It can take a long time to install." -ForegroundColor Yellow
+    Write-Host "Install Visual Studio Build Tools now? Y/N" -ForegroundColor Cyan
+    Write-Host "Recommended: Y for a full setup. Choose N for Windows Sandbox, quick validation, or if you do not want Build Tools installed now." -ForegroundColor DarkYellow
+    if ($PartialDetected) {
+        Write-Host "A partial Build Tools install was detected; choosing Y will run the existing repair/add-components flow." -ForegroundColor DarkYellow
+    }
+
+    while ($true) {
+        $answer = Read-Host "Build Tools install choice [Y/N]"
+        $decision = Resolve-VSBuildToolsInstallDecision -AlreadyValid:$false -PartialDetected:$PartialDetected -AssumeYesEnabled:$false -NonLiveMode:$false -UserChoice $answer
+        if (-not [bool]$decision.ShouldPrompt) { return $decision }
+        Write-Warning $decision.Reason
+    }
+}
+
 
 function Install-VSBuildToolsPassive {
     Write-SubStep "Installing or validating Visual Studio Build Tools with the C++ workload"
@@ -5643,8 +5760,19 @@ function Install-VSBuildToolsPassive {
         Write-Host "  Developer PS : $($validation.VsDevShell)" -ForegroundColor DarkGray
         Write-Host "  MSBuild      : $($validation.MSBuildPath)" -ForegroundColor DarkGray
         Write-Host "  cl.exe       : $($validation.ClPath)" -ForegroundColor DarkGray
+        Set-ToolState -Name "vsbuildtools" -Status "ValidLocal" -Path $validation.InstallationPath -Source "local" -Reason "Visual Studio Build Tools already validated." -LocalValidated $true
         return
     }
+
+    $decision = Resolve-VSBuildToolsInstallDecision -AlreadyValid:$false -PartialDetected:([bool]$validation.Partial) -AssumeYesEnabled:([bool]$AssumeYes) -NonLiveMode:(Test-NonLiveInstallerMode)
+    if ([bool]$decision.ShouldPrompt) { $decision = Read-VSBuildToolsInstallDecision -PartialDetected:([bool]$validation.Partial) }
+    if ([bool]$decision.Skipped) {
+        Write-Host $decision.Reason -ForegroundColor DarkYellow
+        Set-ToolState -Name "vsbuildtools" -Status "SKIPPED" -Path $validation.InstallationPath -Source ([string]$decision.Source) -Reason ([string]$decision.Reason) -InstallNeeded $true
+        Set-CurrentSetupStepSkipped -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -Reason ([string]$decision.Reason)
+        return
+    }
+    Set-ToolState -Name "vsbuildtools" -Status "InstallApproved" -Path $validation.InstallationPath -Source ([string]$decision.Source) -Reason ([string]$decision.Reason) -InstallNeeded $true
 
     if ($validation.Partial) {
         Write-Host "Partial Visual Studio Build Tools state detected." -ForegroundColor Yellow
@@ -5737,6 +5865,7 @@ Do not close this window unless you intentionally want to abort setup.
     Write-Host "  Developer PS : $($validation.VsDevShell)" -ForegroundColor DarkGray
     Write-Host "  MSBuild      : $($validation.MSBuildPath)" -ForegroundColor DarkGray
     Write-Host "  cl.exe       : $($validation.ClPath)" -ForegroundColor DarkGray
+    Set-ToolState -Name "vsbuildtools" -Status "Installed" -Path $validation.InstallationPath -Source ([string]$decision.Source) -Reason "Visual Studio Build Tools validated after install/repair." -LocalValidated $true
 }
 
 function Install-NodeIntoDevRoot {
@@ -6833,9 +6962,31 @@ function Build-StarBreakerProject {
     $starBreakerPath = Join-Path $StarCitizenRoot "StarBreaker"
     if (-not (Test-Path $starBreakerPath)) { throw "StarBreaker repo not found: $starBreakerPath" }
 
-    $starbreakerExe = Join-Path $starBreakerPath "target\release\starbreaker.exe"
-    $mcpExe = Join-Path $starBreakerPath "target\release\starbreaker-mcp.exe"
-    if ((Test-Path $starbreakerExe) -and (Test-Path $mcpExe)) {
+    $binaryState = Get-StarBreakerReleaseBinaryState -StarBreakerRoot $starBreakerPath
+    $starbreakerExe = [string]$binaryState.StarBreakerExe
+    $mcpExe = [string]$binaryState.McpExe
+    if (Test-BuildToolsSkippedByUserChoice) {
+        if ([bool]$binaryState.Ready) {
+            $reason = "Build Tools were skipped by user choice; using existing StarBreaker release binaries."
+            Write-Warning $reason
+            try {
+                Run-Native -Exe $starbreakerExe -Arguments @("--help")
+                Run-Native -Exe $mcpExe -Arguments @("--help")
+            } catch {
+                $skipReason = "Build Tools were skipped by user choice and existing StarBreaker release binaries did not validate."
+                Write-Warning $skipReason
+                Write-Warning $_.Exception.Message
+                Set-CurrentSetupStepSkipped -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP" -Reason $skipReason
+                return
+            }
+            $Script:CurrentStepResultStatus = "WARN"
+            $Script:CurrentStepResultReason = $reason
+            return
+        }
+        Set-CurrentSetupStepSkipped -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP" -Reason "Build Tools were skipped by user choice and no existing StarBreaker release binaries were available to reuse."
+        return
+    }
+    if ([bool]$binaryState.Ready) {
         Write-Host "StarBreaker release executables already exist. Validating and skipping rebuild if they respond." -ForegroundColor Green
         Run-Native -Exe $starbreakerExe -Arguments @("--help") -IgnoreExitCode
         Run-Native -Exe $mcpExe -Arguments @("--help") -IgnoreExitCode
@@ -8351,6 +8502,113 @@ function Invoke-SelfTest {
         $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
         $Script:BlenderState = $oldBlenderState
         $Script:P4KState = $oldP4KState
+        $Script:CurrentStepResultStatus = ""
+        $Script:CurrentStepResultReason = ""
+    }
+
+    try {
+        $validDecision = Resolve-VSBuildToolsInstallDecision -AlreadyValid $true
+        Assert-SelfTest ([string]$validDecision.Status -eq "ValidAlready") "Valid Build Tools did not resolve as ValidAlready."
+        Assert-SelfTest (-not [bool]$validDecision.ShouldPrompt -and -not [bool]$validDecision.ShouldInstall) "Valid Build Tools unexpectedly prompted or installed."
+
+        $assumeYesDecision = Resolve-VSBuildToolsInstallDecision -AssumeYesEnabled $true
+        Assert-SelfTest ([string]$assumeYesDecision.Status -eq "Approved" -and [bool]$assumeYesDecision.ShouldInstall) "AssumeYes Build Tools decision did not approve install."
+
+        $userNoDecision = Resolve-VSBuildToolsInstallDecision -UserChoice "N"
+        Assert-SelfTest ([string]$userNoDecision.Status -eq "UserSkipped" -and [bool]$userNoDecision.Skipped) "User N Build Tools decision did not skip."
+        Assert-SelfTest ([string]$userNoDecision.Reason -eq "Build Tools skipped by user choice.") "User N Build Tools decision reason was not explicit."
+
+        $nonLiveDecision = Resolve-VSBuildToolsInstallDecision -NonLiveMode $true -AssumeYesEnabled $true
+        Assert-SelfTest ([string]$nonLiveDecision.Status -eq "NonLiveSkipped" -and -not [bool]$nonLiveDecision.ShouldInstall) "Non-live Build Tools decision did not block install."
+
+        $promptDecision = Resolve-VSBuildToolsInstallDecision
+        Assert-SelfTest ([string]$promptDecision.Status -eq "PromptNeeded" -and [bool]$promptDecision.ShouldPrompt) "Build Tools missing decision did not require an explicit prompt."
+    } catch { Add-SelfTestError "Build Tools decision helper self-test failed: $($_.Exception.Message)" }
+
+    try {
+        $oldSteps = $Script:SetupSteps
+        $oldLookup = $Script:SetupStepLookup
+        $oldTimings = $Script:StepTimings
+        $oldSkips = $Script:SetupSkips
+        $oldFailures = $Script:SetupFailures
+        $oldToolStates = $Script:ToolStates
+        $oldFatal = $Script:FatalFailure
+        $oldSetupStatePath = $Script:SetupStatePath
+        $oldCurrentStepId = $Script:CurrentStepId
+        $oldCurrentStepName = $Script:CurrentStepName
+        $oldCurrentStepNumber = $Script:CurrentStepNumber
+        $oldCurrentCompletedBefore = $Script:CurrentCompletedBefore
+        $oldStarCitizenRoot = $StarCitizenRoot
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:ToolStates = @{}
+        $Script:FatalFailure = $false
+        $Script:SetupStatePath = Join-Path $Script:HarnessRoot "build-tools-choice-tests\setup-state.json"
+        $Script:SetupSteps = @(
+            (New-SetupStepObject -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools"),
+            (New-SetupStepObject -Id "install-rust" -Name "Synthetic Rust step"),
+            (New-SetupStepObject -Id "clone-repos" -Name "Synthetic repo step"),
+            (New-SetupStepObject -Id "setup-git-versioning" -Name "Synthetic Git versioning step"),
+            (New-SetupStepObject -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP")
+        )
+        $Script:SetupStepLookup = @{}
+        for ($i = 0; $i -lt $Script:SetupSteps.Count; $i++) { $Script:SetupStepLookup[$Script:SetupSteps[$i].Id] = ($i + 1) }
+
+        $fakeRootNoBinaries = Join-Path $Script:HarnessRoot "build-tools-choice-tests\devroot-no-binaries\starcitizen"
+        Set-Variable -Name StarCitizenRoot -Scope Script -Value $fakeRootNoBinaries
+        Invoke-SetupStep -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -ScriptBlock {
+            Set-ToolState -Name "vsbuildtools" -Status "SKIPPED" -Source "user-choice" -Reason "Build Tools skipped by user choice." -InstallNeeded $true
+            Set-CurrentSetupStepSkipped -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -Reason "Build Tools skipped by user choice."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "install-vsbuildtools" -Status "SKIPPED") -eq 1) "Build Tools user skip was not recorded as SKIPPED."
+        Assert-SelfTest ((Get-SelfTestSkipCount -Id "install-vsbuildtools" -Reason "Build Tools skipped by user choice.") -eq 1) "Build Tools user skip did not produce exactly one skip record."
+        Assert-SelfTest (Test-BuildToolsSkippedByUserChoice) "Build Tools skipped-by-user state was not detectable."
+
+        Invoke-SetupStep -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP" -ScriptBlock { throw "build should have been skipped without binaries" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "build-starbreaker" -Status "SKIPPED") -eq 1) "StarBreaker build did not skip after Build Tools user skip without binaries."
+        $buildSkipReason = Get-SetupSkipReason -Id "build-starbreaker"
+        Assert-SelfTest ($buildSkipReason -match "Build Tools were skipped by user choice") "StarBreaker build skip reason did not explain Build Tools user skip."
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:ToolStates = @{}
+        $fakeRootWithBinaries = Join-Path $Script:HarnessRoot "build-tools-choice-tests\devroot-with-binaries\starcitizen"
+        Set-Variable -Name StarCitizenRoot -Scope Script -Value $fakeRootWithBinaries
+        $fakeReleaseDir = Join-Path $fakeRootWithBinaries "StarBreaker\target\release"
+        Write-InstallerFile -Path (Join-Path $fakeReleaseDir "starbreaker.exe") -Text "harness fake starbreaker"
+        Write-InstallerFile -Path (Join-Path $fakeReleaseDir "starbreaker-mcp.exe") -Text "harness fake starbreaker mcp"
+
+        Invoke-SetupStep -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -ScriptBlock {
+            Set-ToolState -Name "vsbuildtools" -Status "SKIPPED" -Source "user-choice" -Reason "Build Tools skipped by user choice." -InstallNeeded $true
+            Set-CurrentSetupStepSkipped -Id "install-vsbuildtools" -Name "Install Visual Studio Build Tools" -Reason "Build Tools skipped by user choice."
+        }
+        Invoke-SetupStep -Id "build-starbreaker" -Name "Build StarBreaker and StarBreaker MCP" -ScriptBlock {
+            $Script:CurrentStepResultStatus = "WARN"
+            $Script:CurrentStepResultReason = "Build Tools were skipped by user choice; using existing StarBreaker release binaries."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "build-starbreaker" -Status "WARN") -eq 1) "StarBreaker build did not proceed to reuse existing binaries after Build Tools user skip."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "build-starbreaker" -Status "SKIPPED") -eq 0) "StarBreaker build was skipped even though reusable binaries existed."
+
+        $state = Get-Content -LiteralPath $Script:SetupStatePath -Raw | ConvertFrom-Json
+        Assert-SelfTest (@($state.tools | Where-Object { [string]$_.name -eq "vsbuildtools" -and [string]$_.status -eq "SKIPPED" -and [string]$_.reason -eq "Build Tools skipped by user choice." }).Count -eq 1) "Setup-state did not record Build Tools skipped by user choice."
+    } catch { Add-SelfTestError "Build Tools user-choice self-test failed: $($_.Exception.Message)" }
+    finally {
+        try { Set-Variable -Name StarCitizenRoot -Scope Script -Value $oldStarCitizenRoot } catch { }
+        $Script:SetupSteps = $oldSteps
+        $Script:SetupStepLookup = $oldLookup
+        $Script:StepTimings = $oldTimings
+        $Script:SetupSkips = $oldSkips
+        $Script:SetupFailures = $oldFailures
+        $Script:ToolStates = $oldToolStates
+        $Script:FatalFailure = $oldFatal
+        $Script:SetupStatePath = $oldSetupStatePath
+        $Script:CurrentStepId = $oldCurrentStepId
+        $Script:CurrentStepName = $oldCurrentStepName
+        $Script:CurrentStepNumber = $oldCurrentStepNumber
+        $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
         $Script:CurrentStepResultStatus = ""
         $Script:CurrentStepResultReason = ""
     }
