@@ -1573,6 +1573,59 @@ function Get-RepoPlainList {
     return @($list.ToArray())
 }
 
+function Set-ToolState {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [string]$Status = "",
+        [string]$Path = "",
+        [string]$Version = "",
+        [string]$Source = "",
+        [string]$Reason = "",
+        [bool]$LocalValidated = $false,
+        [bool]$InstallNeeded = $false,
+        [bool]$NetworkLookupNeeded = $false,
+        [bool]$NetworkBlocked = $false,
+        [string]$VenvStatus = ""
+    )
+    $Script:ToolStates[$Name] = [ordered]@{
+        name = $Name
+        status = $Status
+        path = $Path
+        version = $Version
+        source = $Source
+        reason = $Reason
+        localValidated = [bool]$LocalValidated
+        installNeeded = [bool]$InstallNeeded
+        networkLookupNeeded = [bool]$NetworkLookupNeeded
+        networkBlocked = [bool]$NetworkBlocked
+        venvStatus = $VenvStatus
+    }
+}
+
+function Get-ToolStatePlainList {
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    try {
+        foreach ($key in @($Script:ToolStates.Keys)) {
+            $r = $Script:ToolStates[$key]
+            if ($null -eq $r) { continue }
+            [void]$list.Add([ordered]@{
+                name = [string]$r.name
+                status = [string]$r.status
+                path = [string]$r.path
+                version = [string]$r.version
+                source = [string]$r.source
+                reason = [string]$r.reason
+                localValidated = [bool]$r.localValidated
+                installNeeded = [bool]$r.installNeeded
+                networkLookupNeeded = [bool]$r.networkLookupNeeded
+                networkBlocked = [bool]$r.networkBlocked
+                venvStatus = [string]$r.venvStatus
+            })
+        }
+    } catch { }
+    return @($list.ToArray())
+}
+
 
 function Get-SafeInt64Value {
     param($Value)
@@ -1695,6 +1748,12 @@ function Save-SetupState {
             if (@('OK','Preview') -contains $statusValue) { [void]$completedList.Add((New-PlainStepRecord $r)) }
         }
 
+        $toolList = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($r in (Get-ToolStatePlainList)) {
+            if ($null -eq $r) { continue }
+            [void]$toolList.Add($r)
+        }
+
         $state = [ordered]@{
             version = [string]$Script:ReleaseVersion
             scriptVersion = [string]$Script:InternalBuildVersion
@@ -1705,6 +1764,7 @@ function Save-SetupState {
             isSandbox = [bool]$Script:IsSandbox
             launcherPath = [string]$Script:LauncherPath
             launcherDir = [string]$Script:LauncherDir
+            tools = @($toolList.ToArray())
             repositories = @($repoList.ToArray())
             branches = @($branchList.ToArray())
             tutorialRepo = [ordered]@{
@@ -4901,13 +4961,99 @@ function New-WorkFolders {
     ) | ForEach-Object { Ensure-Directory $_ }
 }
 
+function Test-InstallerNetworkAllowed {
+    return (-not $Script:NoNetwork -and -not (Test-NonLiveInstallerMode))
+}
+
+function Test-LocalGitHubCli {
+    param(
+        [Parameter(Mandatory=$true)][string]$GhExe,
+        [string]$VersionText = "",
+        [int]$VersionExitCode = 0,
+        [switch]$AssumeExists
+    )
+    $exists = [bool]$AssumeExists
+    if (-not $exists) { $exists = Test-Path -LiteralPath $GhExe }
+    $text = [string]$VersionText
+    $exitCode = [int]$VersionExitCode
+    $reason = ""
+
+    if (-not $exists) {
+        return [pscustomobject]@{ Exists=$false; Valid=$false; VersionText=""; Version=""; Reason="GitHub CLI was not found at $GhExe" }
+    }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        if (Test-NonLiveInstallerMode) {
+            return [pscustomobject]@{ Exists=$true; Valid=$false; VersionText=""; Version=""; Reason="Non-live mode did not execute gh.exe for validation." }
+        }
+        try {
+            $output = @(& $GhExe --version 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) { $exitCode = 0 }
+            $text = ($output -join "`n")
+        } catch {
+            $reason = $_.Exception.Message
+        }
+    }
+
+    $version = ""
+    if ($text -match '(?im)^gh\s+version\s+([0-9][^\s]*)') { $version = $Matches[1] }
+    $valid = (($exitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($text)) -and ($text -match '(?im)^gh\s+version\s+'))
+    if (-not $valid -and [string]::IsNullOrWhiteSpace($reason)) { $reason = "gh --version did not return a valid GitHub CLI version." }
+    return [pscustomobject]@{ Exists=$exists; Valid=$valid; VersionText=$text; Version=$version; Reason=$reason }
+}
+
+function Resolve-GitHubCliInstallDecision {
+    param(
+        [bool]$LocalExists,
+        [bool]$LocalValid,
+        [string]$LocalVersion = "",
+        [bool]$NetworkAllowed = $false,
+        [string]$Reason = ""
+    )
+    if ($LocalExists -and $LocalValid) {
+        return [pscustomobject]@{
+            Status="ValidLocal"; LocalValidated=$true; InstallNeeded=$false; NetworkLookupNeeded=$false; NetworkBlocked=$false
+            Version=$LocalVersion; Reason="Existing dev-root GitHub CLI validated locally."
+        }
+    }
+    if (-not $NetworkAllowed) {
+        $why = if ([string]::IsNullOrWhiteSpace($Reason)) { "GitHub CLI install/update is needed, but network or external actions are disabled." } else { $Reason }
+        return [pscustomobject]@{
+            Status="NetworkBlocked"; LocalValidated=$false; InstallNeeded=$true; NetworkLookupNeeded=$false; NetworkBlocked=$true
+            Version=$LocalVersion; Reason=$why
+        }
+    }
+    $installReason = if ($LocalExists) { "Existing dev-root GitHub CLI did not validate; install/update is needed." } else { "GitHub CLI is missing from the dev root; install is needed." }
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $installReason = $Reason }
+    return [pscustomobject]@{
+        Status="InstallNeeded"; LocalValidated=$false; InstallNeeded=$true; NetworkLookupNeeded=$true; NetworkBlocked=$false
+        Version=$LocalVersion; Reason=$installReason
+    }
+}
+
 function Install-GitHubCliIntoDevRoot {
     Write-SubStep "Installing or validating GitHub CLI into $GhRoot"
     $extractRoot = Join-Path $InstallersRoot "gh-extract"
     $ghExe = Join-Path $GhRoot "bin\gh.exe"
 
+    $localGh = Test-LocalGitHubCli -GhExe $ghExe
+    $decision = Resolve-GitHubCliInstallDecision -LocalExists ([bool]$localGh.Exists) -LocalValid ([bool]$localGh.Valid) -LocalVersion ([string]$localGh.Version) -NetworkAllowed (Test-InstallerNetworkAllowed) -Reason ([string]$localGh.Reason)
+    if ([bool]$decision.LocalValidated) {
+        Write-Host ("GitHub CLI already validates in the dev root: {0} ({1})" -f $ghExe, [string]$decision.Version) -ForegroundColor Green
+        Set-ToolState -Name "gh" -Status "ValidLocal" -Path $ghExe -Version ([string]$decision.Version) -Source "dev-root" -Reason ([string]$decision.Reason) -LocalValidated $true
+        Add-UserPath (Join-Path $GhRoot "bin")
+        return
+    }
+
+    Set-ToolState -Name "gh" -Status ([string]$decision.Status) -Path $ghExe -Version ([string]$decision.Version) -Source "dev-root" -Reason ([string]$decision.Reason) -InstallNeeded ([bool]$decision.InstallNeeded) -NetworkLookupNeeded ([bool]$decision.NetworkLookupNeeded) -NetworkBlocked ([bool]$decision.NetworkBlocked)
+
     if ($DryRun) {
-        Write-Host "[dry-run] Would query GitHub releases API and install/update gh.exe into $GhRoot"
+        Write-Host "[dry-run] Would install/update gh.exe into $GhRoot only if local validation fails."
+        return
+    }
+    if ([bool]$decision.NetworkBlocked) {
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = [string]$decision.Reason
         return
     }
 
@@ -4916,16 +5062,8 @@ function Install-GitHubCliIntoDevRoot {
     if ($null -eq $ghAsset) { throw "Could not find a gh_*_windows_amd64.zip asset in the latest GitHub CLI release." }
 
     $latestTag = [string]$ghRelease.tag_name
-    $currentText = if (Test-Path $ghExe) { Get-ExecutableOutputText -Exe $ghExe -Arguments @("--version") } else { "" }
-    if ((Test-Path $ghExe) -and ($currentText -match [regex]::Escape($latestTag.TrimStart('v')))) {
-        Write-Host "GitHub CLI already appears current: $ghExe ($latestTag)" -ForegroundColor Green
-        Add-UserPath (Join-Path $GhRoot "bin")
-        Run-Native -Exe $ghExe -Arguments @("--version") -IgnoreExitCode
-        return
-    }
-
     if (Test-Path $ghExe) {
-        Write-Host "GitHub CLI exists but latest release appears to be $latestTag. Updating the dev-root copy." -ForegroundColor Yellow
+        Write-Host "GitHub CLI exists but did not validate locally. Updating the dev-root copy to $latestTag." -ForegroundColor Yellow
     }
 
     $archive = Join-Path $InstallersRoot $ghAsset.name
@@ -4943,6 +5081,7 @@ function Install-GitHubCliIntoDevRoot {
 
     Add-UserPath (Join-Path $GhRoot "bin")
     Run-Native -Exe (Join-Path $GhRoot "bin\gh.exe") -Arguments @("--version")
+    Set-ToolState -Name "gh" -Status "Installed" -Path (Join-Path $GhRoot "bin\gh.exe") -Version $latestTag -Source "download" -Reason "Installed GitHub CLI from latest GitHub release." -LocalValidated $false -InstallNeeded $true -NetworkLookupNeeded $true
 }
 
 function Get-PythonSeriesFromVersion {
@@ -5049,30 +5188,170 @@ function Get-PythonInstalledVersion {
     return $null
 }
 
+function Test-PythonVersionMatchesRequest {
+    param(
+        [Parameter(Mandatory=$true)]$InstalledVersion,
+        [Parameter(Mandatory=$true)][string]$RequestedVersion
+    )
+    $installed = $null
+    try {
+        if ($InstalledVersion -is [version]) { $installed = $InstalledVersion } else { $installed = [version]([string]$InstalledVersion) }
+    } catch { return $false }
+
+    $series = Get-PythonSeriesFromVersion -VersionText $RequestedVersion
+    $installedSeries = ("{0}.{1}" -f $installed.Major, $installed.Minor)
+    if ($installedSeries -ne $series) { return $false }
+    return $true
+}
+
+function Test-LocalPythonInstall {
+    param(
+        [Parameter(Mandatory=$true)][string]$PythonExe,
+        [Parameter(Mandatory=$true)][string]$RequestedVersion,
+        [string]$VersionText = "",
+        [int]$VersionExitCode = 0,
+        [switch]$AssumeExists
+    )
+    $exists = [bool]$AssumeExists
+    if (-not $exists) { $exists = Test-Path -LiteralPath $PythonExe }
+    $text = [string]$VersionText
+    $exitCode = [int]$VersionExitCode
+    $reason = ""
+
+    if (-not $exists) {
+        return [pscustomobject]@{ Exists=$false; Valid=$false; Version=$null; VersionText=""; Reason="Python was not found at $PythonExe" }
+    }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        if (Test-NonLiveInstallerMode) {
+            return [pscustomobject]@{ Exists=$true; Valid=$false; Version=$null; VersionText=""; Reason="Non-live mode did not execute python.exe for validation." }
+        }
+        try {
+            $output = @(& $PythonExe --version 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) { $exitCode = 0 }
+            $text = ($output -join "`n")
+        } catch {
+            $reason = $_.Exception.Message
+        }
+    }
+
+    $installedVersion = $null
+    if ($text -match 'Python\s+(\d+\.\d+\.\d+)') {
+        try { $installedVersion = [version]$Matches[1] } catch { $installedVersion = $null }
+    }
+    $valid = (($exitCode -eq 0) -and ($null -ne $installedVersion) -and (Test-PythonVersionMatchesRequest -InstalledVersion $installedVersion -RequestedVersion $RequestedVersion))
+    if (-not $valid -and [string]::IsNullOrWhiteSpace($reason)) {
+        $series = Get-PythonSeriesFromVersion -VersionText $RequestedVersion
+        if ($null -eq $installedVersion) {
+            $reason = "python --version did not return a parseable Python version."
+        } else {
+            $reason = "Local Python $installedVersion does not satisfy requested Python $RequestedVersion ($series series)."
+        }
+    }
+    return [pscustomobject]@{ Exists=$exists; Valid=$valid; Version=$installedVersion; VersionText=$text; Reason=$reason }
+}
+
+function Resolve-PythonInstallDecision {
+    param(
+        [bool]$LocalExists,
+        [bool]$LocalValid,
+        $LocalVersion = $null,
+        [bool]$NetworkAllowed = $false,
+        [string]$Reason = ""
+    )
+    $versionText = if ($null -eq $LocalVersion) { "" } else { [string]$LocalVersion }
+    if ($LocalExists -and $LocalValid) {
+        return [pscustomobject]@{
+            Status="ValidLocal"; LocalValidated=$true; InstallNeeded=$false; NetworkLookupNeeded=$false; NetworkBlocked=$false
+            Version=$versionText; Reason="Existing dev-root Python validated locally."
+        }
+    }
+    if (-not $NetworkAllowed) {
+        $why = if ([string]::IsNullOrWhiteSpace($Reason)) { "Python install/update is needed, but network or external actions are disabled." } else { $Reason }
+        return [pscustomobject]@{
+            Status="NetworkBlocked"; LocalValidated=$false; InstallNeeded=$true; NetworkLookupNeeded=$false; NetworkBlocked=$true
+            Version=$versionText; Reason=$why
+        }
+    }
+    $installReason = if ($LocalExists) { "Existing dev-root Python did not satisfy the requested version; install/update is needed." } else { "Python is missing from the dev root; install is needed." }
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $installReason = $Reason }
+    return [pscustomobject]@{
+        Status="InstallNeeded"; LocalValidated=$false; InstallNeeded=$true; NetworkLookupNeeded=$true; NetworkBlocked=$false
+        Version=$versionText; Reason=$installReason
+    }
+}
+
+function Resolve-PythonVenvDecision {
+    param(
+        [bool]$VenvExists,
+        [bool]$VenvPythonValid
+    )
+    if ($VenvExists -and $VenvPythonValid) {
+        return [pscustomobject]@{ Status="Valid"; Action="None"; UsesLocalPython=$true; NetworkLookupNeeded=$false; Reason="Shared Python venv validated locally." }
+    }
+    if (-not $VenvExists) {
+        return [pscustomobject]@{ Status="CreateLocal"; Action="Create"; UsesLocalPython=$true; NetworkLookupNeeded=$false; Reason="Shared Python venv is missing and can be created with local Python." }
+    }
+    return [pscustomobject]@{ Status="RepairLocal"; Action="Repair"; UsesLocalPython=$true; NetworkLookupNeeded=$false; Reason="Shared Python venv exists but did not validate and can be repaired with local Python." }
+}
+
+function Ensure-PythonSharedVenv {
+    param(
+        [Parameter(Mandatory=$true)][string]$PythonExe,
+        [Parameter(Mandatory=$true)][string]$VenvDir,
+        [Parameter(Mandatory=$true)][string]$Series
+    )
+    $venvPy = Join-Path $VenvDir "Scripts\python.exe"
+    $venvExists = Test-Path -LiteralPath $VenvDir
+    $venvPythonValid = $false
+    if ($venvExists -and (Test-Path -LiteralPath $venvPy)) {
+        $venvPythonValid = Test-PythonSeriesInstalled -PythonExe $venvPy -Series $Series
+    }
+    $decision = Resolve-PythonVenvDecision -VenvExists $venvExists -VenvPythonValid $venvPythonValid
+    if ([string]$decision.Action -ne "None") {
+        Write-Host ([string]$decision.Reason) -ForegroundColor DarkCyan
+        Run-Native -Exe $PythonExe -Arguments @("-m", "venv", $VenvDir) -ActivityNote "Creating or repairing the shared Python virtual environment."
+    } else {
+        Write-Host "Python venv already validates locally: $VenvDir" -ForegroundColor Green
+    }
+    if (-not (Test-Path -LiteralPath $venvPy)) { throw "Python virtual environment was not found after validation/creation: $venvPy" }
+    Run-Native -Exe $venvPy -Arguments @("--version") -IgnoreExitCode
+    Run-Native -Exe $venvPy -Arguments @("-m", "pip", "check") -IgnoreExitCode
+    return $decision
+}
+
 function Install-PythonIntoDevRoot {
     $pythonSeries = Get-PythonSeriesFromVersion -VersionText $PythonVersion
     Write-SubStep "Installing or validating Python $pythonSeries into $PythonInstallDir"
     $py = Join-Path $PythonInstallDir "python.exe"
 
+    $localPython = Test-LocalPythonInstall -PythonExe $py -RequestedVersion $PythonVersion
+    $decision = Resolve-PythonInstallDecision -LocalExists ([bool]$localPython.Exists) -LocalValid ([bool]$localPython.Valid) -LocalVersion $localPython.Version -NetworkAllowed (Test-InstallerNetworkAllowed) -Reason ([string]$localPython.Reason)
+
+    if ([bool]$decision.LocalValidated) {
+        Write-Host ("Python {0} already validates in the dev root: {1}" -f [string]$decision.Version, $py) -ForegroundColor Green
+        Add-UserPath $PythonInstallDir
+        Add-UserPath (Join-Path $PythonInstallDir "Scripts")
+        Set-UserEnv "PIP_CACHE_DIR" $PipCacheDir
+        $venvDecision = if (-not $DryRun) { Ensure-PythonSharedVenv -PythonExe $py -VenvDir $PythonVenvDir -Series $pythonSeries } else { Resolve-PythonVenvDecision -VenvExists $false -VenvPythonValid $false }
+        Set-ToolState -Name "python" -Status "ValidLocal" -Path $py -Version ([string]$decision.Version) -Source "dev-root" -Reason ([string]$decision.Reason) -LocalValidated $true -VenvStatus ([string]$venvDecision.Status)
+        return
+    }
+
+    Set-ToolState -Name "python" -Status ([string]$decision.Status) -Path $py -Version ([string]$decision.Version) -Source "dev-root" -Reason ([string]$decision.Reason) -InstallNeeded ([bool]$decision.InstallNeeded) -NetworkLookupNeeded ([bool]$decision.NetworkLookupNeeded) -NetworkBlocked ([bool]$decision.NetworkBlocked)
+    if ([bool]$decision.NetworkBlocked) {
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = [string]$decision.Reason
+        return
+    }
+    if ($DryRun) {
+        Write-Host "[dry-run] Would install/update Python into $PythonInstallDir only if local validation fails."
+        return
+    }
+
     $candidate = Resolve-PythonWindowsInstallerVersion -RequestedVersion $PythonVersion -Series $pythonSeries
     if ($null -eq $candidate) {
         throw "Could not find a downloadable Windows x64 installer for Python $pythonSeries.x on Python.org."
-    }
-
-    $candidateVersion = [version]$candidate.Version
-    $installedVersion = Get-PythonInstalledVersion -PythonExe $py
-    $needsInstall = $true
-
-    if ($null -ne $installedVersion) {
-        $installedSeries = ("{0}.{1}" -f $installedVersion.Major, $installedVersion.Minor)
-        if (($installedSeries -eq $pythonSeries) -and ($installedVersion -ge $candidateVersion)) {
-            Write-Host ("Python {0} already appears current enough in the dev root: {1}" -f $installedVersion, $py) -ForegroundColor Green
-            $needsInstall = $false
-        } elseif ($installedSeries -eq $pythonSeries) {
-            Write-Host ("Python {0} is installed, but Python {1} is the newest available Windows installer in this series. Updating." -f $installedVersion, $candidateVersion) -ForegroundColor Yellow
-        } else {
-            Write-Warning ("Python exists in the dev root, but it is Python {0}. The tutorial expects Python {1}.x, so the dev-root Python install will be refreshed." -f $installedVersion, $pythonSeries)
-        }
     }
 
     if ($candidate.Version -ne $PythonVersion) {
@@ -5081,23 +5360,21 @@ function Install-PythonIntoDevRoot {
         Write-Host "Selected Python installer version: $($candidate.Version)" -ForegroundColor Green
     }
 
-    if ($needsInstall) {
-        $installer = Join-Path $InstallersRoot "python-$($candidate.Version)-amd64.exe"
-        Download-File -Uri $candidate.Url -OutFile $installer
+    $installer = Join-Path $InstallersRoot "python-$($candidate.Version)-amd64.exe"
+    Download-File -Uri $candidate.Url -OutFile $installer
 
-        $installerArgs = @(
-            "/quiet",
-            "InstallAllUsers=0",
-            "TargetDir=$PythonInstallDir",
-            "Include_pip=1",
-            "Include_launcher=1",
-            "InstallLauncherAllUsers=0",
-            "PrependPath=0",
-            "Include_test=0",
-            "Shortcuts=0"
-        )
-        Run-ProcessWait -FilePath $installer -ArgumentList $installerArgs -ActivityNote "Installing Python $($candidate.Version) into the selected dev root."
-    }
+    $installerArgs = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "TargetDir=$PythonInstallDir",
+        "Include_pip=1",
+        "Include_launcher=1",
+        "InstallLauncherAllUsers=0",
+        "PrependPath=0",
+        "Include_test=0",
+        "Shortcuts=0"
+    )
+    Run-ProcessWait -FilePath $installer -ArgumentList $installerArgs -ActivityNote "Installing Python $($candidate.Version) into the selected dev root."
 
     Add-UserPath $PythonInstallDir
     Add-UserPath (Join-Path $PythonInstallDir "Scripts")
@@ -5110,16 +5387,12 @@ function Install-PythonIntoDevRoot {
         }
         Run-Native -Exe $py -Arguments @("--version")
 
-        if (-not (Test-Path $PythonVenvDir)) {
-            Run-Native -Exe $py -Arguments @("-m", "venv", $PythonVenvDir) -ActivityNote "Creating the shared Python virtual environment."
-        } else {
-            Write-Host "Python venv already exists: $PythonVenvDir" -ForegroundColor Green
-        }
-
+        $venvDecision = Ensure-PythonSharedVenv -PythonExe $py -VenvDir $PythonVenvDir -Series $pythonSeries
         $venvPy = Join-Path $PythonVenvDir "Scripts\python.exe"
-        if (-not (Test-Path -LiteralPath $venvPy)) { throw "Python virtual environment was not found after creation: $venvPy" }
-        Run-Native -Exe $venvPy -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-        Run-Native -Exe $venvPy -Arguments @("-m", "pip", "check") -IgnoreExitCode
+        if (Test-InstallerNetworkAllowed) {
+            Run-Native -Exe $venvPy -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+        }
+        Set-ToolState -Name "python" -Status "Installed" -Path $py -Version ([string]$candidate.Version) -Source "download" -Reason "Installed Python from Python.org Windows installer." -LocalValidated $false -InstallNeeded $true -NetworkLookupNeeded $true -VenvStatus ([string]$venvDecision.Status)
     }
 }
 
@@ -7525,6 +7798,25 @@ function Show-SetupOutcomeSummary {
         }
     }
 
+    $toolStates = @(Get-ToolStatePlainList)
+    if ($toolStates.Count -gt 0) {
+        Write-Host "TOOL VALIDATION STATUS:" -ForegroundColor Cyan
+        foreach ($tool in $toolStates) {
+            $status = [string]$tool.status
+            $color = switch ($status) {
+                "ValidLocal" { "Green" }
+                "Installed" { "Green" }
+                "InstallNeeded" { "Yellow" }
+                "NetworkBlocked" { "Red" }
+                default { "DarkYellow" }
+            }
+            Write-Host ("  - {0}: {1}" -f [string]$tool.name, $status) -ForegroundColor $color
+            if (-not [string]::IsNullOrWhiteSpace([string]$tool.version)) { Write-Host ("    Version: " + [string]$tool.version) -ForegroundColor DarkCyan }
+            if (-not [string]::IsNullOrWhiteSpace([string]$tool.venvStatus)) { Write-Host ("    Venv: " + [string]$tool.venvStatus) -ForegroundColor DarkCyan }
+            if (-not [string]::IsNullOrWhiteSpace([string]$tool.reason)) { Write-Host ("    Reason: " + [string]$tool.reason) -ForegroundColor DarkYellow }
+        }
+    }
+
     if ([string]$Script:AgentGuidanceState.status -ne "NotStarted") {
         $agentColor = switch ([string]$Script:AgentGuidanceState.status) {
             "OK" { "Green" }
@@ -7905,6 +8197,58 @@ function Invoke-SelfTest {
         $Script:CurrentStepResultStatus = ""
         $Script:CurrentStepResultReason = ""
     }
+
+    try {
+        $Script:ToolStates = @{}
+        $fakeGh = Join-Path $Script:HarnessRoot "offline-tools\gh\bin\gh.exe"
+        $validGh = Test-LocalGitHubCli -GhExe $fakeGh -AssumeExists -VersionText "gh version 2.75.0 (harness)" -VersionExitCode 0
+        $validGhDecision = Resolve-GitHubCliInstallDecision -LocalExists ([bool]$validGh.Exists) -LocalValid ([bool]$validGh.Valid) -LocalVersion ([string]$validGh.Version) -NetworkAllowed $false -Reason ([string]$validGh.Reason)
+        Assert-SelfTest ([string]$validGhDecision.Status -eq "ValidLocal") "Valid local gh did not resolve as ValidLocal."
+        Assert-SelfTest (-not [bool]$validGhDecision.NetworkLookupNeeded) "Valid local gh still required a network lookup."
+        Set-ToolState -Name "gh" -Status ([string]$validGhDecision.Status) -Path $fakeGh -Version ([string]$validGhDecision.Version) -Source "harness" -Reason ([string]$validGhDecision.Reason) -LocalValidated ([bool]$validGhDecision.LocalValidated)
+
+        $missingGhDecision = Resolve-GitHubCliInstallDecision -LocalExists $false -LocalValid $false -NetworkAllowed $true
+        Assert-SelfTest ([string]$missingGhDecision.Status -eq "InstallNeeded") "Missing gh did not resolve as InstallNeeded when network is allowed."
+        Assert-SelfTest ([bool]$missingGhDecision.NetworkLookupNeeded) "Missing gh did not request a network lookup when install/update is needed."
+
+        $blockedGhDecision = Resolve-GitHubCliInstallDecision -LocalExists $false -LocalValid $false -NetworkAllowed $false
+        Assert-SelfTest ([string]$blockedGhDecision.Status -eq "NetworkBlocked") "Missing gh with NoNetwork did not resolve as NetworkBlocked."
+        Assert-SelfTest (-not [bool]$blockedGhDecision.NetworkLookupNeeded) "NoNetwork gh decision still requested a network lookup."
+        Assert-SelfTest ([bool]$blockedGhDecision.NetworkBlocked) "NoNetwork gh decision did not record networkBlocked."
+
+        Assert-SelfTest (Test-PythonVersionMatchesRequest -InstalledVersion ([version]"3.12.13") -RequestedVersion "3.12.13") "Exact Python version did not match itself."
+        Assert-SelfTest (Test-PythonVersionMatchesRequest -InstalledVersion ([version]"3.12.14") -RequestedVersion "3.12.13") "Newer same-series Python did not satisfy exact request series."
+        Assert-SelfTest (Test-PythonVersionMatchesRequest -InstalledVersion ([version]"3.12.12") -RequestedVersion "3.12.13") "Older same-series Python did not satisfy exact request series."
+        Assert-SelfTest (Test-PythonVersionMatchesRequest -InstalledVersion ([version]"3.12.1") -RequestedVersion "3.12") "Same-series Python did not satisfy series request."
+        Assert-SelfTest (-not (Test-PythonVersionMatchesRequest -InstalledVersion ([version]"3.11.9") -RequestedVersion "3.12")) "Wrong-series Python satisfied series request."
+
+        $fakePython = Join-Path $Script:HarnessRoot "offline-tools\python\Python312\python.exe"
+        $validPython = Test-LocalPythonInstall -PythonExe $fakePython -RequestedVersion "3.12" -AssumeExists -VersionText "Python 3.12.13" -VersionExitCode 0
+        $validPythonDecision = Resolve-PythonInstallDecision -LocalExists ([bool]$validPython.Exists) -LocalValid ([bool]$validPython.Valid) -LocalVersion $validPython.Version -NetworkAllowed $false -Reason ([string]$validPython.Reason)
+        Assert-SelfTest ([string]$validPythonDecision.Status -eq "ValidLocal") "Valid local Python did not resolve as ValidLocal."
+        Assert-SelfTest (-not [bool]$validPythonDecision.NetworkLookupNeeded) "Valid local Python still required a Python.org lookup."
+
+        $wrongPython = Test-LocalPythonInstall -PythonExe $fakePython -RequestedVersion "3.12" -AssumeExists -VersionText "Python 3.11.9" -VersionExitCode 0
+        $wrongPythonDecision = Resolve-PythonInstallDecision -LocalExists ([bool]$wrongPython.Exists) -LocalValid ([bool]$wrongPython.Valid) -LocalVersion $wrongPython.Version -NetworkAllowed $true -Reason ([string]$wrongPython.Reason)
+        Assert-SelfTest ([string]$wrongPythonDecision.Status -eq "InstallNeeded") "Wrong-series Python did not resolve as InstallNeeded when network is allowed."
+        Assert-SelfTest ([bool]$wrongPythonDecision.NetworkLookupNeeded) "Wrong-series Python did not request Python.org lookup when install/update is needed."
+
+        $blockedPythonDecision = Resolve-PythonInstallDecision -LocalExists ([bool]$wrongPython.Exists) -LocalValid ([bool]$wrongPython.Valid) -LocalVersion $wrongPython.Version -NetworkAllowed $false -Reason ([string]$wrongPython.Reason)
+        Assert-SelfTest ([string]$blockedPythonDecision.Status -eq "NetworkBlocked") "Wrong/missing Python with NoNetwork did not resolve as NetworkBlocked."
+        Assert-SelfTest (-not [bool]$blockedPythonDecision.NetworkLookupNeeded) "NoNetwork Python decision still requested Python.org lookup."
+
+        $validVenv = Resolve-PythonVenvDecision -VenvExists $true -VenvPythonValid $true
+        $createVenv = Resolve-PythonVenvDecision -VenvExists $false -VenvPythonValid $false
+        $repairVenv = Resolve-PythonVenvDecision -VenvExists $true -VenvPythonValid $false
+        Assert-SelfTest ([string]$validVenv.Status -eq "Valid" -and [bool]$validVenv.UsesLocalPython -and -not [bool]$validVenv.NetworkLookupNeeded) "Valid venv decision did not stay local/offline."
+        Assert-SelfTest ([string]$createVenv.Status -eq "CreateLocal" -and [bool]$createVenv.UsesLocalPython -and -not [bool]$createVenv.NetworkLookupNeeded) "Missing venv decision did not use local Python only."
+        Assert-SelfTest ([string]$repairVenv.Status -eq "RepairLocal" -and [bool]$repairVenv.UsesLocalPython -and -not [bool]$repairVenv.NetworkLookupNeeded) "Repair venv decision did not use local Python only."
+
+        Set-ToolState -Name "python" -Status ([string]$validPythonDecision.Status) -Path $fakePython -Version ([string]$validPythonDecision.Version) -Source "harness" -Reason ([string]$validPythonDecision.Reason) -LocalValidated ([bool]$validPythonDecision.LocalValidated) -VenvStatus ([string]$validVenv.Status)
+        $plainTools = @(Get-ToolStatePlainList)
+        Assert-SelfTest (@($plainTools | Where-Object { [string]$_.name -eq "gh" -and [string]$_.status -eq "ValidLocal" }).Count -eq 1) "ToolStates did not include valid local gh."
+        Assert-SelfTest (@($plainTools | Where-Object { [string]$_.name -eq "python" -and [string]$_.status -eq "ValidLocal" -and [string]$_.venvStatus -eq "Valid" }).Count -eq 1) "ToolStates did not include valid local Python and venv status."
+    } catch { Add-SelfTestError "Offline-friendly tool decision self-test failed: $($_.Exception.Message)" }
 
     try {
         $check = [pscustomobject]@{ SourceSize=[int64]150GB; Buffer=[int64][Math]::Max([double]10GB, [double]150GB*0.05) }
