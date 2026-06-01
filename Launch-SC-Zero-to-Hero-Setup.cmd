@@ -367,7 +367,9 @@ set "DG_EXIT=%ERRORLEVEL%"
 goto :Finished
 
 :RunPayload
-set "DG_PAYLOAD=%TEMP%\SC-Zero-to-Hero-Setup-v23-%RANDOM%%RANDOM%.ps1"
+set "DG_PAYLOAD_BUILD=%DG_SCRIPT_BUILD%"
+if not defined DG_PAYLOAD_BUILD set "DG_PAYLOAD_BUILD=payload"
+set "DG_PAYLOAD=%TEMP%\SC-Zero-to-Hero-Setup-%DG_PAYLOAD_BUILD%-%RANDOM%%RANDOM%.ps1"
 echo.
 echo Preparing embedded PowerShell payload...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $self=$env:DG_SELF; $out=$env:DG_PAYLOAD; $raw=[IO.File]::ReadAllText($self,[Text.Encoding]::UTF8); $marker=('# POWER'+'SHELL_PAYLOAD_BELOW'); $idx=$raw.LastIndexOf($marker); if($idx -lt 0){ throw 'Embedded PowerShell payload was not found.' }; $payload=$raw.Substring($idx + $marker.Length).TrimStart([char[]]@([char]13,[char]10)); $utf8=New-Object System.Text.UTF8Encoding($false); [IO.File]::WriteAllText($out,$payload,$utf8)"
