@@ -8,6 +8,7 @@ set "DG_SELF=%~f0"
 set "DG_LAUNCHER_DIR=%~dp0"
 set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
+set "DG_SUPPRESS_FINISHED_MESSAGE=0"
 set "DG_MODE=live"
 set "DG_SCRIPT_VERSION=v0.42"
 set "DG_SCRIPT_BUILD=%DG_SCRIPT_VERSION%"
@@ -24,6 +25,10 @@ set "DG_MUSIC_SCRIPT="
 set "DG_MUSIC_STOP="
 set "DG_MUSIC_PID_FILE="
 set "DG_MUSIC_PLAYER_PID="
+set "DG_LAUNCHER_PID="
+set "DG_LAUNCHER_START_UTC="
+set "DG_INTRO_SCRIPT="
+set "DG_INTRO_CHOICE_FILE="
 
 where powershell.exe >nul 2>nul
 if errorlevel 1 (
@@ -49,6 +54,7 @@ for %%A in (%*) do (
 
 if "%SC_ZERO_TO_HERO_MUSIC%"=="0" set "DG_MUSIC_ON=0"
 if "%DG_CLI_NONLIVE%"=="1" set "DG_MUSIC_ON=0"
+if "%DG_CLI_NONLIVE%"=="0" call :CaptureLauncherProcessIdentity
 
 if "%DG_CLI_SELFTEST%"=="1" goto :RunSelfTest
 
@@ -65,6 +71,26 @@ set "DG_EXIT=%ERRORLEVEL%"
 goto :Finished
 
 :StartLauncher
+set "DG_LAUNCH_KEY="
+call :RunIntroAnimation
+if errorlevel 1 goto :StaticLauncherPrompt
+if /I "%DG_LAUNCH_KEY%"=="Y" (
+    call :StopLauncherMusic
+    set "DG_MODE=live"
+    goto :ChooseInstallRoot
+)
+if /I "%DG_LAUNCH_KEY%"=="N" (
+    call :StopLauncherMusic
+    goto :Cancelled
+)
+if /I "%DG_LAUNCH_KEY%"=="H" (
+    call :StopLauncherMusic
+    set "DG_MODE=hidden"
+    goto :ChooseInstallRoot
+)
+goto :StartLauncher
+
+:StaticLauncherPrompt
 cls
 call :PrintIntro
 call :EnsureLauncherMusic
@@ -120,6 +146,39 @@ echo Please type Y, N, or M.
 echo.
 goto :PromptLaunchChoice
 
+:CaptureLauncherProcessIdentity
+for /f "usebackq tokens=1,2 delims=|" %%A in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='SilentlyContinue'; $self=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID); if($null -ne $self -and $self.ParentProcessId){ $p=Get-Process -Id $self.ParentProcessId -ErrorAction SilentlyContinue; if($p){ '{0}|{1:o}' -f $p.Id, $p.StartTime.ToUniversalTime() } }"`) do (
+    set "DG_LAUNCHER_PID=%%A"
+    set "DG_LAUNCHER_START_UTC=%%B"
+)
+exit /b 0
+
+:RunIntroAnimation
+if "%DG_CLI_NONLIVE%"=="1" exit /b 1
+set "DG_INTRO_TOKEN=%RANDOM%%RANDOM%"
+set "DG_INTRO_SCRIPT=%TEMP%\SC-Zero-to-Hero-Intro-%DG_INTRO_TOKEN%.ps1"
+set "DG_INTRO_CHOICE_FILE=%TEMP%\SC-Zero-to-Hero-IntroChoice-%DG_INTRO_TOKEN%.txt"
+if exist "%DG_INTRO_CHOICE_FILE%" del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $self=$env:DG_SELF; $out=$env:DG_INTRO_SCRIPT; $lines=[IO.File]::ReadAllLines($self,[Text.Encoding]::UTF8); $begin='# HINTRO_ANIMATION_PAYLOAD_BEGIN'; $end='# HINTRO_ANIMATION_PAYLOAD_END'; $s=-1; $e=-1; for($i=0; $i -lt $lines.Length; $i++){ if($lines[$i] -eq $begin){ $s=$i; continue }; if($s -ge 0 -and $lines[$i] -eq $end){ $e=$i; break } }; if($s -lt 0 -or $e -le $s){ throw 'Embedded intro animation payload was not found.' }; $payload=($lines[($s+1)..($e-1)] -join [Environment]::NewLine); $utf8=New-Object System.Text.UTF8Encoding($false); [IO.File]::WriteAllText($out,$payload,$utf8)"
+if errorlevel 1 (
+    if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
+    exit /b 1
+)
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%DG_INTRO_SCRIPT%" -LauncherPath "%DG_SELF%" -ChoiceFile "%DG_INTRO_CHOICE_FILE%" -MusicDefaultOn "%DG_MUSIC_ON%" -LauncherPid "%DG_LAUNCHER_PID%" -LauncherStartUtc "%DG_LAUNCHER_START_UTC%"
+if errorlevel 1 (
+    if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
+    if defined DG_INTRO_CHOICE_FILE del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
+    exit /b 1
+)
+for /f "usebackq tokens=1,* delims==" %%A in ("%DG_INTRO_CHOICE_FILE%") do (
+    if /I "%%~A"=="CHOICE" set "DG_LAUNCH_KEY=%%~B"
+    if /I "%%~A"=="MUSIC" set "DG_MUSIC_ON=%%~B"
+)
+if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
+if defined DG_INTRO_CHOICE_FILE del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
+if not defined DG_LAUNCH_KEY exit /b 1
+exit /b 0
+
 :PrintIntro
 echo.
 echo    ___ ___ ___ ___ ___ _____ ___  ___  ___ _   _ _  _ _  _ ___ ___
@@ -149,7 +208,7 @@ set "DG_MUSIC_SCRIPT=%TEMP%\SC-Zero-to-Hero-MusicPlayer-%DG_MUSIC_TOKEN%.ps1"
 set "DG_MUSIC_STOP=%TEMP%\SC-Zero-to-Hero-MusicStop-%DG_MUSIC_TOKEN%.signal"
 set "DG_MUSIC_PID_FILE=%TEMP%\SC-Zero-to-Hero-MusicPid-%DG_MUSIC_TOKEN%.txt"
 if exist "%DG_MUSIC_STOP%" del "%DG_MUSIC_STOP%" >nul 2>nul
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $utf8=New-Object System.Text.UTF8Encoding($false); $raw=[IO.File]::ReadAllText($env:DG_SELF,[Text.Encoding]::UTF8); $begin=('# HMUSIC_'+'BASE64_BEGIN'); $end=('# HMUSIC_'+'BASE64_END'); $s=$raw.IndexOf($begin); $e=$raw.IndexOf($end); if($s -lt 0 -or $e -le $s){ throw 'Embedded music payload was not found.' }; $b64=($raw.Substring($s+$begin.Length,$e-($s+$begin.Length)) -replace '\s',''); [IO.File]::WriteAllBytes($env:DG_MUSIC_AUDIO,[Convert]::FromBase64String($b64)); $player=@('param([string]$AudioPath,[string]$StopFile)','Set-StrictMode -Version 2.0','$ErrorActionPreference = \"Stop\"','Add-Type -AssemblyName PresentationCore','$player = New-Object System.Windows.Media.MediaPlayer','$uri = New-Object System.Uri($AudioPath)','$player.Open($uri)','$player.Volume = 0.45','$player.Play()','while (-not (Test-Path -LiteralPath $StopFile)) {','    Start-Sleep -Milliseconds 250','    try { if ($player.NaturalDuration.HasTimeSpan -and $player.Position -ge $player.NaturalDuration.TimeSpan) { $player.Position = [TimeSpan]::Zero; $player.Play() } } catch {}','}','try { $player.Stop(); $player.Close() } catch {}') -join [Environment]::NewLine; [IO.File]::WriteAllText($env:DG_MUSIC_SCRIPT,$player,$utf8)"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $utf8=New-Object System.Text.UTF8Encoding($false); $raw=[IO.File]::ReadAllText($env:DG_SELF,[Text.Encoding]::UTF8); $begin=('# HMUSIC_'+'BASE64_BEGIN'); $end=('# HMUSIC_'+'BASE64_END'); $s=$raw.IndexOf($begin); $e=$raw.IndexOf($end); if($s -lt 0 -or $e -le $s){ throw 'Embedded music payload was not found.' }; $b64=($raw.Substring($s+$begin.Length,$e-($s+$begin.Length)) -replace '\s',''); [IO.File]::WriteAllBytes($env:DG_MUSIC_AUDIO,[Convert]::FromBase64String($b64)); $player=@('param([string]$AudioPath,[string]$StopFile,[int]$LauncherPid=0,[string]$LauncherStartUtc=\"\")','Set-StrictMode -Version 2.0','$ErrorActionPreference = \"Stop\"','function Test-LauncherParentAlive {','    if ($LauncherPid -le 0) { return $true }','    $p = Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue','    if ($null -eq $p) { return $false }','    if (-not [string]::IsNullOrWhiteSpace($LauncherStartUtc)) {','        try {','            $expected = ([datetime]::Parse($LauncherStartUtc)).ToUniversalTime()','            $actual = $p.StartTime.ToUniversalTime()','            if ([Math]::Abs(($actual - $expected).TotalSeconds) -gt 2) { return $false }','        } catch { }','    }','    return $true','}','Add-Type -AssemblyName PresentationCore','$player = New-Object System.Windows.Media.MediaPlayer','$uri = New-Object System.Uri($AudioPath)','$player.Open($uri)','$player.Volume = 0.45','$player.Play()','while (-not (Test-Path -LiteralPath $StopFile)) {','    if (-not (Test-LauncherParentAlive)) { break }','    Start-Sleep -Milliseconds 250','    try { if ($player.NaturalDuration.HasTimeSpan -and $player.Position -ge $player.NaturalDuration.TimeSpan) { $player.Position = [TimeSpan]::Zero; $player.Play() } } catch {}','}','try { $player.Stop(); $player.Close() } catch {}') -join [Environment]::NewLine; [IO.File]::WriteAllText($env:DG_MUSIC_SCRIPT,$player,$utf8)"
 if errorlevel 1 (
     echo.
     echo Music could not start on this system. Continuing without it.
@@ -157,7 +216,7 @@ if errorlevel 1 (
     call :StopLauncherMusic
     exit /b 0
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; function Q([string]$s){ $q=[char]34; return $q + ($s -replace $q, ($q+$q)) + $q }; $argLine='-NoProfile -STA -ExecutionPolicy Bypass -File '+(Q $env:DG_MUSIC_SCRIPT)+' -AudioPath '+(Q $env:DG_MUSIC_AUDIO)+' -StopFile '+(Q $env:DG_MUSIC_STOP); $p=Start-Process -FilePath powershell.exe -ArgumentList $argLine -WindowStyle Hidden -PassThru; $utf8=New-Object System.Text.UTF8Encoding($false); [IO.File]::WriteAllText($env:DG_MUSIC_PID_FILE,[string]$p.Id,$utf8)"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; function Q([string]$s){ $q=[char]34; return $q + ($s -replace $q, ($q+$q)) + $q }; $argLine='-NoProfile -STA -ExecutionPolicy Bypass -File '+(Q $env:DG_MUSIC_SCRIPT)+' -AudioPath '+(Q $env:DG_MUSIC_AUDIO)+' -StopFile '+(Q $env:DG_MUSIC_STOP)+' -LauncherPid '+(Q $env:DG_LAUNCHER_PID)+' -LauncherStartUtc '+(Q $env:DG_LAUNCHER_START_UTC); $p=Start-Process -FilePath powershell.exe -ArgumentList $argLine -WindowStyle Hidden -PassThru; $utf8=New-Object System.Text.UTF8Encoding($false); [IO.File]::WriteAllText($env:DG_MUSIC_PID_FILE,[string]$p.Id,$utf8)"
 if errorlevel 1 (
     echo.
     echo Music could not start on this system. Continuing without it.
@@ -374,7 +433,9 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
-    exit /b 0
+    set "DG_EXIT=0"
+    set "DG_SUPPRESS_FINISHED_MESSAGE=1"
+    goto :Finished
 )
 call :BootstrapWinget
 set "DG_EXIT=%ERRORLEVEL%"
@@ -483,7 +544,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-exit /b 0
+set "DG_EXIT=0"
+set "DG_SUPPRESS_FINISHED_MESSAGE=1"
+goto :Finished
 
 :ElevatedFromConfig
 set "DG_CONFIG=%~2"
@@ -548,7 +611,7 @@ echo.
 echo VISUAL PREVIEW MODE ACTIVE
 echo No Administrator request will be made by this launcher.
 echo No installers, downloads, PATH edits, repo actions, or build actions will run.
-call :RunPayload -All -HiddenPreview -DevRoot "%DG_DEVROOT%"
+call :RunPayload -All -HiddenPreview -InteractiveHiddenPreviewCelebration -DevRoot "%DG_DEVROOT%"
 set "DG_EXIT=%ERRORLEVEL%"
 goto :Finished
 
@@ -583,11 +646,346 @@ exit /b 0
 
 :Finished
 call :StopLauncherMusic
+if "%DG_SUPPRESS_FINISHED_MESSAGE%"=="1" exit /b %DG_EXIT%
 echo.
 echo Launcher finished with exit code %DG_EXIT%.
 echo.
 pause
 exit /b %DG_EXIT%
+
+# HINTRO_ANIMATION_PAYLOAD_BEGIN
+param(
+    [string]$LauncherPath,
+    [string]$ChoiceFile,
+    [string]$MusicDefaultOn = "1",
+    [int]$LauncherPid = 0,
+    [string]$LauncherStartUtc = "",
+    [int]$FrameDelayMs = 80
+)
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = "Stop"
+
+$Script:MusicEnabled = ($MusicDefaultOn -eq "1")
+$Script:MusicAvailable = $false
+$Script:Player = $null
+$Script:TempMusicPath = Join-Path ([IO.Path]::GetTempPath()) ("SC-Zero-to-Hero-Intro-" + [guid]::NewGuid().ToString("N") + ".mp3")
+$Script:Selected = ""
+$Script:QuitRequested = $false
+$Script:OriginalCursorVisible = $true
+$Script:ScrollerText = "// DIRECTORGUNNER // MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY // SC ZERO TO HERO! //"
+
+function Test-LauncherParentAlive {
+    if ($LauncherPid -le 0) { return $true }
+    try {
+        $p = Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue
+        if ($null -eq $p) { return $false }
+        if (-not [string]::IsNullOrWhiteSpace($LauncherStartUtc)) {
+            try {
+                $expected = ([datetime]::Parse($LauncherStartUtc)).ToUniversalTime()
+                $actual = $p.StartTime.ToUniversalTime()
+                if ([Math]::Abs(($actual - $expected).TotalSeconds) -gt 2) { return $false }
+            } catch { }
+        }
+    } catch {
+        return $true
+    }
+    return $true
+}
+
+function Get-EmbeddedIntroMusicBase64 {
+    if ([string]::IsNullOrWhiteSpace($LauncherPath) -or -not (Test-Path -LiteralPath $LauncherPath)) { return "" }
+    $lines = [IO.File]::ReadAllLines($LauncherPath, [Text.Encoding]::UTF8)
+    $begin = ("# HMUSIC_" + "BASE64_BEGIN")
+    $end = ("# HMUSIC_" + "BASE64_END")
+    $s = -1
+    $e = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -eq $begin) {
+            $s = $i
+            continue
+        }
+        if ($s -ge 0 -and $lines[$i] -eq $end) {
+            $e = $i
+            break
+        }
+    }
+    if ($s -lt 0 -or $e -le $s) { return "" }
+    return (($lines[($s + 1)..($e - 1)] -join "") -replace "\s", "")
+}
+
+function Start-IntroMusic {
+    if (-not $Script:MusicEnabled) { return }
+    try {
+        $b64 = Get-EmbeddedIntroMusicBase64
+        if ([string]::IsNullOrWhiteSpace($b64)) { $Script:MusicAvailable = $false; return }
+        [IO.File]::WriteAllBytes($Script:TempMusicPath, [Convert]::FromBase64String($b64))
+        Add-Type -AssemblyName PresentationCore
+        $Script:Player = New-Object System.Windows.Media.MediaPlayer
+        $Script:Player.Volume = 0.45
+        $Script:Player.Open((New-Object System.Uri($Script:TempMusicPath)))
+        $Script:Player.Play()
+        $Script:MusicAvailable = $true
+    } catch {
+        $Script:MusicAvailable = $false
+        $Script:Player = $null
+    }
+}
+
+function Stop-IntroMusic {
+    try {
+        if ($null -ne $Script:Player) {
+            try { $Script:Player.Stop() } catch { }
+            try { $Script:Player.Close() } catch { }
+        }
+    } catch { }
+    $Script:Player = $null
+    $Script:MusicAvailable = $false
+    try {
+        if (Test-Path -LiteralPath $Script:TempMusicPath) {
+            Remove-Item -LiteralPath $Script:TempMusicPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
+function Toggle-IntroMusic {
+    $Script:MusicEnabled = -not $Script:MusicEnabled
+    if ($Script:MusicEnabled) {
+        Start-IntroMusic
+    } else {
+        Stop-IntroMusic
+    }
+}
+
+function Update-IntroMusicLoop {
+    if (-not $Script:MusicEnabled -or $null -eq $Script:Player) { return }
+    try {
+        if ($Script:Player.NaturalDuration.HasTimeSpan) {
+            $duration = $Script:Player.NaturalDuration.TimeSpan
+            if ($duration.TotalMilliseconds -gt 1000 -and $Script:Player.Position.TotalMilliseconds -ge ($duration.TotalMilliseconds - 250)) {
+                $Script:Player.Position = [TimeSpan]::Zero
+                $Script:Player.Play()
+            }
+        }
+    } catch { }
+}
+
+function Get-SafeConsoleSize {
+    $width = 100
+    $height = 30
+    try {
+        $width = [Math]::Max(70, [Console]::WindowWidth)
+        $height = [Math]::Max(20, [Console]::WindowHeight)
+    } catch { }
+    return [pscustomobject]@{
+        Width = [Math]::Min($width, 136)
+        Height = [Math]::Min($height, 38)
+    }
+}
+
+function New-Canvas {
+    param([int]$Width, [int]$Height)
+    $canvas = New-Object 'System.Collections.Generic.List[char[]]'
+    for ($y = 0; $y -lt $Height; $y++) {
+        [void]$canvas.Add(([char[]](" " * $Width)))
+    }
+    return $canvas
+}
+
+function Write-At {
+    param(
+        [System.Collections.Generic.List[char[]]]$Canvas,
+        [int]$X,
+        [int]$Y,
+        [string]$Text
+    )
+    if ($Y -lt 0 -or $Y -ge $Canvas.Count -or [string]::IsNullOrEmpty($Text)) { return }
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $xx = $X + $i
+        if ($xx -ge 0 -and $xx -lt $Canvas[$Y].Length) { $Canvas[$Y][$xx] = $Text[$i] }
+    }
+}
+
+function Center-Text {
+    param(
+        [System.Collections.Generic.List[char[]]]$Canvas,
+        [int]$Y,
+        [string]$Text,
+        [int]$Width
+    )
+    $x = [Math]::Max(0, [int](($Width - $Text.Length) / 2))
+    Write-At -Canvas $Canvas -X $x -Y $Y -Text $Text
+}
+
+function New-StarField {
+    param([int]$Width, [int]$Height, [int]$Count)
+    $rand = New-Object System.Random
+    $chars = @(".", ".", ".", "+", "*")
+    $stars = New-Object 'System.Collections.Generic.List[object]'
+    for ($i = 0; $i -lt $Count; $i++) {
+        [void]$stars.Add([pscustomobject]@{
+            X = $rand.Next(0, [Math]::Max(1, $Width - 1))
+            Y = $rand.Next(1, [Math]::Max(2, $Height - 3))
+            Speed = $rand.Next(1, 4)
+            Char = $chars[$rand.Next(0, $chars.Count)]
+        })
+    }
+    return $stars
+}
+
+function Update-StarField {
+    param([System.Collections.Generic.List[object]]$Stars, [int]$Width, [int]$Height)
+    $rand = New-Object System.Random
+    foreach ($star in $Stars) {
+        $star.X -= $star.Speed
+        if ($star.X -le 0) {
+            $star.X = $Width - 2
+            $star.Y = $rand.Next(1, [Math]::Max(2, $Height - 3))
+            $star.Speed = $rand.Next(1, 4)
+        }
+    }
+}
+
+function Draw-DirectorGunnerTitle {
+    param(
+        [System.Collections.Generic.List[char[]]]$Canvas,
+        [int]$Frame,
+        [int]$Width,
+        [int]$Y
+    )
+    $title = @(
+        ' ____  ___ ____  _____ ____ _____ ___  ____   ____ _   _ _   _ _   _ _____ ____  ',
+        '|  _ \|_ _|  _ \| ____/ ___|_   _/ _ \|  _ \ / ___| | | | \ | | \ | | ____|  _ \ ',
+        '| | | || || |_) |  _|| |     | || | | | |_) | |  _| | | |  \| |  \| |  _| | |_) |',
+        '| |_| || ||  _ <| |__| |___  | || |_| |  _ <| |_| | |_| | |\  | |\  | |___|  _ < ',
+        '|____/|___|_| \_\_____\____| |_| \___/|_| \_\\____|\___/|_| \_|_| \_|_____|_| \_\'
+    )
+    $titleWidth = ($title | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+    if ($titleWidth -gt ($Width - 4)) {
+        Center-Text -Canvas $Canvas -Y $Y -Text "DIRECTORGUNNER" -Width $Width
+        Center-Text -Canvas $Canvas -Y ($Y + 1) -Text "presents" -Width $Width
+        return 2
+    }
+    for ($i = 0; $i -lt $title.Count; $i++) {
+        Center-Text -Canvas $Canvas -Y ($Y + $i) -Text $title[$i] -Width $Width
+    }
+    Center-Text -Canvas $Canvas -Y ($Y + 6) -Text "presents" -Width $Width
+    $spark = @(".", "+", "*", "+")[$Frame % 4]
+    $left = [int](($Width - $titleWidth) / 2)
+    $right = $left + $titleWidth - 1
+    Write-At -Canvas $Canvas -X ([Math]::Max(0, $left - 2)) -Y ($Y + (($Frame + 1) % 5)) -Text $spark
+    Write-At -Canvas $Canvas -X ([Math]::Min($Width - 1, $right + 1)) -Y ($Y + (($Frame + 3) % 5)) -Text $spark
+    return 7
+}
+
+function Draw-AnimatedBanner {
+    param(
+        [System.Collections.Generic.List[char[]]]$Canvas,
+        [int]$Frame,
+        [int]$Width,
+        [int]$Y
+    )
+    $line1 = "[ DirectorGunner's Anti-Slicer Script ]"
+    $line2 = "ZERO TO HERO :: LOCAL RIG SETUP"
+    $line3 = "MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY"
+    $innerW = [Math]::Max($line1.Length, [Math]::Max($line2.Length, $line3.Length)) + 8
+    $innerW = [Math]::Min($innerW, $Width - 8)
+    $x = [int](($Width - $innerW) / 2)
+    $pulse = @("-", "=", ".", "=")[$Frame % 4]
+    $leftCorner = @("/", "-", "\", "|")[$Frame % 4]
+    $rightCorner = @("\", "-", "/", "|")[$Frame % 4]
+    Write-At -Canvas $Canvas -X $x -Y $Y -Text ($leftCorner + ($pulse * ($innerW - 2)) + $rightCorner)
+    Write-At -Canvas $Canvas -X $x -Y ($Y + 1) -Text ("|" + (" " * ($innerW - 2)) + "|")
+    Write-At -Canvas $Canvas -X $x -Y ($Y + 2) -Text ("|" + (" " * ($innerW - 2)) + "|")
+    Write-At -Canvas $Canvas -X $x -Y ($Y + 3) -Text ("|" + (" " * ($innerW - 2)) + "|")
+    Write-At -Canvas $Canvas -X $x -Y ($Y + 4) -Text ($rightCorner + ($pulse * ($innerW - 2)) + $leftCorner)
+    Center-Text -Canvas $Canvas -Y ($Y + 1) -Text $line1 -Width $Width
+    Center-Text -Canvas $Canvas -Y ($Y + 2) -Text $line2 -Width $Width
+    Center-Text -Canvas $Canvas -Y ($Y + 3) -Text $line3 -Width $Width
+}
+
+function Draw-IntroFrame {
+    param(
+        [System.Collections.Generic.List[object]]$Stars,
+        [int]$Frame,
+        [int]$Width,
+        [int]$Height
+    )
+    $canvas = New-Canvas -Width $Width -Height $Height
+    foreach ($star in $Stars) {
+        if ($star.X -ge 0 -and $star.X -lt $Width -and $star.Y -ge 0 -and $star.Y -lt $Height) {
+            $canvas[$star.Y][$star.X] = [char]$star.Char
+        }
+    }
+    $titleY = 1
+    $titleH = Draw-DirectorGunnerTitle -Canvas $canvas -Frame $Frame -Width $Width -Y $titleY
+    $bannerY = $titleY + $titleH + 2
+    Draw-AnimatedBanner -Canvas $canvas -Frame $Frame -Width $Width -Y $bannerY
+    $musicState = if ($Script:MusicEnabled -and $Script:MusicAvailable) { "ON" } elseif ($Script:MusicEnabled) { "ON (NO AUDIO)" } else { "OFF" }
+    $bodyY = [Math]::Min($bannerY + 6, [Math]::Max($bannerY + 5, $Height - 12))
+    Center-Text -Canvas $canvas -Y $bodyY -Text "Single-file launcher for SC Zero to Hero Setup." -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 2) -Text ("Music: " + $musicState + "   (Press M to mute/unmute)") -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 4) -Text "Ready to launch?" -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 5) -Text "Y = live setup. Choose the install root next; UAC may ask for Administrator permission." -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 6) -Text "N = cancel. Nothing is changed.    M = music on/off." -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 8) -Text "Press Y to continue, N to cancel, or M to toggle music." -Width $Width
+    $scrollUnit = " " + $Script:ScrollerText + " "
+    $offset = $Frame % $scrollUnit.Length
+    $repeatCount = [int]([Math]::Ceiling(($Width + $scrollUnit.Length + 2) / [double]$scrollUnit.Length) + 2)
+    $scrollSource = $scrollUnit * $repeatCount
+    $scroll = $scrollSource.Substring($offset, $Width)
+    Write-At -Canvas $canvas -X 0 -Y ($Height - 2) -Text $scroll
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($row in $canvas) { [void]$sb.AppendLine((-join $row).PadRight($Width)) }
+    return $sb.ToString()
+}
+
+function Read-IntroInput {
+    while ([Console]::KeyAvailable) {
+        $key = [Console]::ReadKey($true)
+        switch ($key.Key) {
+            "Y" { $Script:Selected = "Y"; $Script:QuitRequested = $true }
+            "N" { $Script:Selected = "N"; $Script:QuitRequested = $true }
+            "M" { Toggle-IntroMusic }
+            "H" { $Script:Selected = "H"; $Script:QuitRequested = $true }
+        }
+    }
+}
+
+function Save-IntroChoice {
+    $choice = if ([string]::IsNullOrWhiteSpace($Script:Selected)) { "N" } else { $Script:Selected }
+    $music = if ($Script:MusicEnabled) { "1" } else { "0" }
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllLines($ChoiceFile, @("CHOICE=$choice", "MUSIC=$music"), $utf8)
+}
+
+$size = Get-SafeConsoleSize
+$width = $size.Width
+$height = $size.Height
+$stars = New-StarField -Width $width -Height $height -Count ([Math]::Min(190, [int]($width * $height / 22)))
+$frame = 0
+
+try {
+    $Script:OriginalCursorVisible = [Console]::CursorVisible
+    [Console]::CursorVisible = $false
+    Clear-Host
+    Start-IntroMusic
+    while (-not $Script:QuitRequested) {
+        if (-not (Test-LauncherParentAlive)) { break }
+        Read-IntroInput
+        Update-IntroMusicLoop
+        Update-StarField -Stars $stars -Width $width -Height $height
+        $frame++
+        [Console]::SetCursorPosition(0, 0)
+        [Console]::Write((Draw-IntroFrame -Stars $stars -Frame $frame -Width $width -Height $height))
+        Start-Sleep -Milliseconds $FrameDelayMs
+    }
+} finally {
+    Stop-IntroMusic
+    try { [Console]::CursorVisible = $Script:OriginalCursorVisible } catch { }
+    try { Save-IntroChoice } catch { }
+    try { [Console]::SetCursorPosition(0, [Math]::Min([Console]::WindowHeight - 1, $height - 1)) } catch { }
+}
+# HINTRO_ANIMATION_PAYLOAD_END
 
 # HMUSIC_BASE64_BEGIN
 SUQzAwAAAAF/DUFQSUMAAGTjAAAAaW1hZ2UvanBlZwADQ292ZXIA/9j/4AAQSkZJRgABAQAAAQAB
@@ -36983,6 +37381,7 @@ param(
     [switch]$AllowNonAdmin,
     [switch]$DryRun,
     [switch]$HiddenPreview,
+    [switch]$InteractiveHiddenPreviewCelebration,
     [switch]$HarnessMode,
     [string]$HarnessRoot = "",
     [switch]$NoExternalActions,
@@ -46118,27 +46517,34 @@ def set_pom_high():
     return status, reason, prop_path
 
 
-def set_rendered_viewport(root, label='immediate'):
+def get_safe_viewport_mode():
+    if os.environ.get('SC_ZERO_TO_HERO_FORCE_RENDERED_VIEW', '').strip() == '1':
+        return 'RENDERED', 'Rendered requested by SC_ZERO_TO_HERO_FORCE_RENDERED_VIEW=1.'
+    return 'MATERIAL', 'Material Preview selected as the safe automatic default.'
+
+
+def set_safe_viewport(root, label='immediate'):
     changed = 0
+    viewport_mode, viewport_reason = get_safe_viewport_mode()
     try:
         for screen in bpy.data.screens:
             for area in screen.areas:
                 if area.type != 'VIEW_3D':
-                    continue
+                        continue
                 for space in area.spaces:
                     if space.type != 'VIEW_3D':
                         continue
                     try:
-                        space.shading.type = 'RENDERED'
+                        space.shading.type = viewport_mode
                     except Exception as exc:
-                        log('Rendered viewport update failed for screen ' + screen.name + ': ' + str(exc))
+                        log('Viewport update failed for screen ' + screen.name + ' mode=' + viewport_mode + ': ' + str(exc))
                         continue
                     try:
                         space.show_region_ui = True
                     except Exception:
                         pass
                     changed += 1
-        log('Rendered viewport pass ' + label + ': updated ' + str(changed) + ' VIEW_3D spaces across all screens.')
+        log('Viewport pass ' + label + ': mode=' + viewport_mode + '; reason=' + viewport_reason + '; updated ' + str(changed) + ' VIEW_3D spaces across all screens.')
         if root is not None and bpy.context.screen:
             try:
                 for area in bpy.context.screen.areas:
@@ -46153,7 +46559,7 @@ def set_rendered_viewport(root, label='immediate'):
             except Exception as exc:
                 log('Viewport framing best-effort failed: ' + str(exc))
     except Exception as exc:
-        log('Rendered viewport update failed: ' + str(exc))
+        log('Viewport update failed: ' + str(exc))
     return ('OK' if changed > 0 else 'WARN'), changed
 
 
@@ -46190,7 +46596,7 @@ def create_instruction_text(root):
             'Press N and use the StarBreaker tab.',
             'Scroll inside the StarBreaker tab to reach Animations.',
             'POM Detail should be High.',
-            'Viewport should be Rendered; Material Preview is also useful.',
+            'Viewport defaults to Material Preview for stability; Rendered is optional if your GPU/driver is stable.',
             'Use Refresh Materials if textures look wrong.',
             'The black wire/curve clutter is StarBreaker/scene helper data and not necessarily an import failure.',
             '',
@@ -46211,8 +46617,8 @@ def run_gui_deferred_pass(label):
         current_root = find_package_root_object()
         select_root(current_root)
         set_pom_high()
-        status, count = set_rendered_viewport(current_root, label)
-        log('Deferred GUI pass ' + label + ': Rendered status=' + status + ', VIEW_3D spaces updated=' + str(count))
+        status, count = set_safe_viewport(current_root, label)
+        log('Deferred GUI pass ' + label + ': viewport status=' + status + ', VIEW_3D spaces updated=' + str(count))
     except Exception as exc:
         log('Deferred GUI pass ' + label + ' failed: ' + str(exc))
     return None
@@ -46228,7 +46634,7 @@ def schedule_gui_deferred_passes():
                     return run_gui_deferred_pass(pass_label)
                 return callback
             bpy.app.timers.register(make_callback(label), first_interval=delay)
-        log('Scheduled deferred GUI Rendered viewport/POM retry passes.')
+        log('Scheduled deferred GUI safe viewport/POM retry passes.')
     except Exception as exc:
         log('Could not schedule deferred GUI retry passes: ' + str(exc))
 
@@ -46236,7 +46642,7 @@ def schedule_gui_deferred_passes():
 root = find_package_root_object()
 poll_before, poll_after = select_root(root)
 pom_status, pom_reason, pom_path = set_pom_high()
-viewport_status, viewport_view3d_count = set_rendered_viewport(root, 'immediate') if mode == 'gui' else ('SKIPPED', 0)
+viewport_status, viewport_view3d_count = set_safe_viewport(root, 'immediate') if mode == 'gui' else ('SKIPPED', 0)
 refresh_status, refresh_reason = refresh_materials_if_safe()
 create_instruction_text(root)
 schedule_gui_deferred_passes()
@@ -46376,7 +46782,7 @@ function Test-SuccessCelebrationEligible {
         [bool]$HasTimedFailure = $false
     )
     if ($Script:HarnessMode -or $SelfTest -or $Script:PlanOnly -or $Script:NoExternalActions -or $Script:NoPause) { return $false }
-    if ($Script:HiddenDryRun -or $Script:VisualPreviewMode) { return $false }
+    if (($Script:HiddenDryRun -or $Script:VisualPreviewMode) -and (-not $InteractiveHiddenPreviewCelebration)) { return $false }
     if (-not [string]::IsNullOrWhiteSpace($Script:EmitPlanJson)) { return $false }
     if ($MainFailed -or $Script:FatalFailure -or $Script:AbortRequested -or $HasTimedFailure) { return $false }
     if ($FinalExitCode -ne 0) { return $false }
@@ -46843,7 +47249,7 @@ function Show-SetupOutcomeSummary {
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.sceneJson)) { Write-Host ("    scene.json: " + [string]$Script:AuroraImportState.sceneJson) -ForegroundColor DarkCyan }
         Write-Host ("    Geometry={0}; Materials={1}; Add-on={2}; Animation metadata={3}; Animation controls={4}" -f [string]$Script:AuroraImportState.geometryStatus, [string]$Script:AuroraImportState.materialsStatus, [string]$Script:AuroraImportState.addonStatus, [string]$Script:AuroraImportState.animationMetadataStatus, [string]$Script:AuroraImportState.animationControlsStatus) -ForegroundColor DarkCyan
         Write-Host ("    Objects={0}, MeshObjects={1}, UsedMeshData={2}, LinkedLibraries={3}, Materials={4}, Images={5}, MissingAssets={6}" -f [int]$Script:AuroraImportState.objectCount, [int]$Script:AuroraImportState.meshObjectCount, [int]$Script:AuroraImportState.nonzeroUsedMeshDatablockCount, [int]$Script:AuroraImportState.linkedLibraryCount, [int]$Script:AuroraImportState.materialCount, [int]$Script:AuroraImportState.imageCount, [int]$Script:AuroraImportState.missingAssetCount) -ForegroundColor DarkCyan
-        Write-Host ("    POM High={0}; Viewport Rendered={1}; Refresh Materials={2}" -f [string]$Script:AuroraImportState.pomDetailStatus, [string]$Script:AuroraImportState.viewportRenderedStatus, [string]$Script:AuroraImportState.refreshMaterialsStatus) -ForegroundColor DarkCyan
+        Write-Host ("    POM High={0}; Safe viewport={1}; Refresh Materials={2}" -f [string]$Script:AuroraImportState.pomDetailStatus, [string]$Script:AuroraImportState.viewportRenderedStatus, [string]$Script:AuroraImportState.refreshMaterialsStatus) -ForegroundColor DarkCyan
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.launcherPath)) { Write-Host ("    Launcher: " + [string]$Script:AuroraImportState.launcherPath) -ForegroundColor DarkCyan }
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.helperLog)) { Write-Host ("    Helper log: " + [string]$Script:AuroraImportState.helperLog) -ForegroundColor DarkGray }
     }
@@ -47099,21 +47505,36 @@ function Invoke-SelfTest {
             $musicEnd = ("# HMUSIC_" + "BASE64_END")
             $successMusicBegin = ("# HSUCCESS_" + "MUSIC_BASE64_BEGIN")
             $successMusicEnd = ("# HSUCCESS_" + "MUSIC_BASE64_END")
+            $introAnimBegin = "# HINTRO_ANIMATION_PAYLOAD_BEGIN"
+            $introAnimEnd = "# HINTRO_ANIMATION_PAYLOAD_END"
             $wingetMarker = ("# WINGET_" + "BOOTSTRAP_PAYLOAD_BELOW")
             $psMarker = ("# POWER" + "SHELL_PAYLOAD_BELOW")
-            $musicBeginIndex = $launcherText.IndexOf($musicBegin)
-            $musicEndIndex = $launcherText.IndexOf($musicEnd)
-            $successMusicBeginIndex = $launcherText.IndexOf($successMusicBegin)
-            $successMusicEndIndex = $launcherText.IndexOf($successMusicEnd)
-            $wingetIndex = $launcherText.IndexOf($wingetMarker)
-            $psIndex = $launcherText.IndexOf($psMarker)
+            $launcherLines = @($launcherText -split "`r?`n")
+            function Get-LauncherMarkerLineIndex([string]$Marker) {
+                for ($i = 0; $i -lt $launcherLines.Count; $i++) {
+                    if ($launcherLines[$i] -eq $Marker) { return $i }
+                }
+                return -1
+            }
+            $introAnimBeginIndex = Get-LauncherMarkerLineIndex $introAnimBegin
+            $introAnimEndIndex = Get-LauncherMarkerLineIndex $introAnimEnd
+            $musicBeginIndex = Get-LauncherMarkerLineIndex $musicBegin
+            $musicEndIndex = Get-LauncherMarkerLineIndex $musicEnd
+            $successMusicBeginIndex = Get-LauncherMarkerLineIndex $successMusicBegin
+            $successMusicEndIndex = Get-LauncherMarkerLineIndex $successMusicEnd
+            $wingetIndex = Get-LauncherMarkerLineIndex $wingetMarker
+            $psIndex = Get-LauncherMarkerLineIndex $psMarker
+            Assert-SelfTest ($introAnimBeginIndex -ge 0 -and $introAnimEndIndex -gt $introAnimBeginIndex) "Embedded intro animation payload markers were missing or out of order."
             Assert-SelfTest ($musicBeginIndex -ge 0 -and $musicEndIndex -gt $musicBeginIndex) "Embedded music Base64 markers were missing or out of order."
             Assert-SelfTest ($successMusicBeginIndex -ge 0 -and $successMusicEndIndex -gt $successMusicBeginIndex) "Embedded success music Base64 markers were missing or out of order."
+            Assert-SelfTest (@($launcherLines | Where-Object { $_ -eq $musicBegin }).Count -eq 1) "Duplicate intro music Base64 begin marker found."
+            Assert-SelfTest (@($launcherLines | Where-Object { $_ -eq $successMusicBegin }).Count -eq 1) "Duplicate success music Base64 begin marker found."
+            Assert-SelfTest ($introAnimEndIndex -lt $musicBeginIndex) "Intro animation payload was not before the music payloads."
             Assert-SelfTest ($successMusicBeginIndex -gt $musicEndIndex) "Success music markers were not separate from intro music markers."
             Assert-SelfTest ($wingetIndex -gt $successMusicEndIndex) "Embedded music payloads were not before the WinGet payload marker."
             Assert-SelfTest ($psIndex -gt $wingetIndex) "PowerShell payload marker ordering was invalid."
             if ($musicBeginIndex -ge 0 -and $musicEndIndex -gt $musicBeginIndex) {
-                $musicBase64 = ($launcherText.Substring($musicBeginIndex + $musicBegin.Length, $musicEndIndex - ($musicBeginIndex + $musicBegin.Length)) -replace '\s','')
+                $musicBase64 = (($launcherLines[($musicBeginIndex + 1)..($musicEndIndex - 1)] -join '') -replace '\s','')
                 Assert-SelfTest ($musicBase64.Length -eq 1043468) "Embedded music Base64 length did not match the source MP3."
                 $musicBytes = [Convert]::FromBase64String($musicBase64)
                 Assert-SelfTest ($musicBytes.Length -eq 782599) "Embedded music decoded byte count did not match the source MP3."
@@ -47126,7 +47547,7 @@ function Invoke-SelfTest {
                 }
             }
             if ($successMusicBeginIndex -ge 0 -and $successMusicEndIndex -gt $successMusicBeginIndex) {
-                $successMusicBase64 = ($launcherText.Substring($successMusicBeginIndex + $successMusicBegin.Length, $successMusicEndIndex - ($successMusicBeginIndex + $successMusicBegin.Length)) -replace '\s','')
+                $successMusicBase64 = (($launcherLines[($successMusicBeginIndex + 1)..($successMusicEndIndex - 1)] -join '') -replace '\s','')
                 Assert-SelfTest ($successMusicBase64.Length -eq 1697844) "Embedded success music Base64 length did not match the source MP3."
                 $successMusicBytes = [Convert]::FromBase64String($successMusicBase64)
                 Assert-SelfTest ($successMusicBytes.Length -eq 1273382) "Embedded success music decoded byte count did not match the source MP3."
@@ -47140,16 +47561,28 @@ function Invoke-SelfTest {
             }
             Assert-SelfTest ($launcherText.Contains("SC_ZERO_TO_HERO_MUSIC")) "Launcher music opt-out environment variable was not present."
             Assert-SelfTest ($launcherText.Contains("Type Y, N, or M")) "Launcher prompt did not advertise Y/N/M."
+            Assert-SelfTest ($launcherText.Contains("DIRECTORGUNNER") -and $launcherText.Contains("DirectorGunner's Anti-Slicer Script") -and $launcherText.Contains("ZERO TO HERO :: LOCAL RIG SETUP") -and $launcherText.Contains("MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY")) "Animated intro required title/banner text was missing."
+            Assert-SelfTest ($launcherText.Contains("// DIRECTORGUNNER // MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY // SC ZERO TO HERO! //")) "Animated intro scroller text was missing or changed."
+            Assert-SelfTest (-not $launcherText.Contains(("CHROME NINJA " + "CODING BRIGADE"))) "Animated intro contained rejected old scroller text."
+            Assert-SelfTest (-not ($launcherText -match '(?m)^\s*\$Script:ScrollerText\s*=\s*"DIREC"')) "Animated intro contained a truncated DIREC scroller artifact."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="M"')) "Launcher prompt did not handle M music toggle."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="H"')) "Hidden H launcher path was not present."
             Assert-SelfTest (-not ($launcherText -match '(?im)^\s*echo\s+.*H\s*=')) "Hidden H appears to be advertised in visible launcher text."
+            Assert-SelfTest ($launcherText.Contains("Test-LauncherParentAlive") -and $launcherText.Contains("LauncherPid") -and $launcherText.Contains("LauncherStartUtc")) "Intro music parent-process watchdog was missing."
+            Assert-SelfTest ($launcherText.Contains("while (-not (Test-Path -LiteralPath `$StopFile))") -and $launcherText.Contains("if (-not (Test-LauncherParentAlive)) { break }")) "Intro music player did not exit on stop signal or missing parent process."
+            Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y"') -and $launcherText.Contains("goto :ChooseInstallRoot")) "Normal Y handoff did not go directly to install-root selection."
+            Assert-SelfTest ($launcherText.Contains("DG_SUPPRESS_FINISHED_MESSAGE") -and $launcherText.Contains('if "%DG_SUPPRESS_FINISHED_MESSAGE%"=="1" exit /b %DG_EXIT%')) "Normal handoff exit-code message suppression was missing."
             Assert-SelfTest ($launcherText.Contains("call :StopLauncherMusic") -and $launcherText.Contains(":RunPayload")) "Launcher music stop calls were not present around setup transitions."
             Assert-SelfTest ($launcherText.Contains('if not "%DG_MUSIC_STARTED%"=="1" if not defined DG_MUSIC_PLAYER_PID if not defined DG_MUSIC_STOP exit /b %DG_MUSIC_STOP_EXIT%')) "StopLauncherMusic did not have a cheap no-op path."
             Assert-SelfTest ($launcherText.Contains("WaitForExit(300)")) "StopLauncherMusic cleanup wait was not shortened to 300 ms."
             Assert-SelfTest (-not $launcherText.Contains(("WaitForExit(" + "1200)"))) "StopLauncherMusic still used the old long wait."
-            Assert-SelfTest ($launcherText.Contains("for screen in bpy.data.screens")) "Blender GUI helper did not iterate all screens for Rendered viewport."
+            Assert-SelfTest ($launcherText.Contains("for screen in bpy.data.screens")) "Blender GUI helper did not iterate all screens for safe viewport updates."
+            Assert-SelfTest ($launcherText.Contains("SC_ZERO_TO_HERO_FORCE_RENDERED_VIEW") -and $launcherText.Contains("return 'MATERIAL'") -and $launcherText.Contains("space.shading.type = viewport_mode")) "Blender GUI helper did not prefer Material Preview with guarded Rendered opt-in."
+            Assert-SelfTest (-not $launcherText.Contains(("space.shading.type = '" + "RENDERED'"))) "Blender GUI helper still forced Rendered viewport directly."
             Assert-SelfTest ($launcherText.Contains("bpy.app.timers.register(make_callback(label), first_interval=delay)")) "Blender GUI helper did not schedule deferred timer retries."
             Assert-SelfTest ($launcherText.Contains("('deferred-0.50s', 0.5)") -and $launcherText.Contains("('deferred-1.50s', 1.5)") -and $launcherText.Contains("('deferred-3.00s', 3.0)")) "Blender GUI helper deferred retry timings were missing."
+            Assert-SelfTest ($launcherText.Contains("Still scanning Data.p4k...") -and $launcherText.Contains("This can be quiet while StarBreaker indexes/searches the archive.") -and $launcherText.Contains("Last log write age:")) "P4K quiet-scan heartbeat text was missing."
+            Assert-SelfTest ($launcherText.Contains("InteractiveHiddenPreviewCelebration") -and $launcherText.Contains("-InteractiveHiddenPreviewCelebration")) "Interactive hidden-H celebration flag/path was missing."
             Assert-SelfTest ($launcherText.Contains("CONGRATS, YOU DID IT!") -and $launcherText.Contains("Now make some amazing things, Hero.") -and $launcherText.Contains("DG-42") -and $launcherText.Contains("THE ANTI-SLICER SCRIPT") -and $launcherText.Contains("GO MAKE SOMETHING AMAZING!")) "Success celebration required text was missing."
             Assert-SelfTest (-not $launcherText.Contains(("GO MAKE THE " + "UNREASONABLE"))) "Success celebration contained the rejected status text."
             Assert-SelfTest (-not $launcherText.Contains(("DG-" + "Z2H"))) "Success celebration contained the rejected ship label."
@@ -47176,8 +47609,10 @@ function Invoke-SelfTest {
         $oldFailures = $Script:SetupFailures
         $oldSkips = $Script:SetupSkips
         $oldSelfTest = $SelfTest
+        $oldInteractiveHiddenPreviewCelebration = $InteractiveHiddenPreviewCelebration
         try {
             $SelfTest = $false
+            $InteractiveHiddenPreviewCelebration = $false
             $Script:HarnessMode = $false
             $Script:PlanOnly = $false
             $Script:NoExternalActions = $false
@@ -47213,6 +47648,8 @@ function Invoke-SelfTest {
             $Script:NoPause = $false
             $Script:HiddenDryRun = $true
             Assert-SelfTest (-not (Test-SuccessCelebrationEligible -FinalExitCode 0 -MainFailed:$false -HasTimedFailure:$false)) "Success celebration was eligible during HiddenPreview."
+            $InteractiveHiddenPreviewCelebration = $true
+            Assert-SelfTest (Test-SuccessCelebrationEligible -FinalExitCode 0 -MainFailed:$false -HasTimedFailure:$false) "Interactive hidden-H preview was not eligible for success celebration testing."
         } finally {
             $Script:HarnessMode = $oldHarnessMode
             $Script:PlanOnly = $oldPlanOnly
@@ -47226,6 +47663,7 @@ function Invoke-SelfTest {
             $Script:SetupFailures = $oldFailures
             $Script:SetupSkips = $oldSkips
             $SelfTest = $oldSelfTest
+            $InteractiveHiddenPreviewCelebration = $oldInteractiveHiddenPreviewCelebration
         }
     } catch { Add-SelfTestError "Success celebration eligibility self-test failed: $($_.Exception.Message)" }
 
@@ -48237,6 +48675,41 @@ function ConvertTo-StarBreakerCommandLine {
     return ($parts -join ' ')
 }
 
+function Test-StarBreakerP4KScanArguments {
+    param([string[]]$Arguments = @())
+    $joined = (@($Arguments) -join ' ')
+    return ($joined -match '(?i)\bp4k\s+list\b|\bp4k\b.*\b--filter\b')
+}
+
+function Get-P4KQuietScanHeartbeatNote {
+    param(
+        [string]$BaseNote = "",
+        [string]$LogPath = "",
+        [TimeSpan]$Elapsed = ([TimeSpan]::Zero)
+    )
+    if ($Elapsed.TotalSeconds -lt 20) { return $BaseNote }
+
+    $lastAge = "waiting for log output"
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($LogPath) -and (Test-Path -LiteralPath $LogPath)) {
+            $age = (Get-Date) - (Get-Item -LiteralPath $LogPath).LastWriteTime
+            if ($age.TotalSeconds -lt 2) { $lastAge = "just now" }
+            elseif ($age.TotalMinutes -lt 1) { $lastAge = ("{0}s ago" -f [int]$age.TotalSeconds) }
+            else { $lastAge = ("{0}m {1}s ago" -f [int]$age.TotalMinutes, ([int]$age.TotalSeconds % 60)) }
+        }
+    } catch { }
+
+    $elapsedText = ("{0:00}:{1:00}:{2:00}" -f [int]$Elapsed.TotalHours, $Elapsed.Minutes, $Elapsed.Seconds)
+    return @"
+Still scanning Data.p4k...
+This can be quiet while StarBreaker indexes/searches the archive.
+Elapsed time: $elapsedText
+Last log write age: $lastAge
+Output log path: $LogPath
+Do not close this window.
+"@.Trim()
+}
+
 function Invoke-StarBreakerLoggedV23 {
     param(
         [Parameter(Mandatory=$true)][string]$Exe,
@@ -48318,6 +48791,7 @@ function Invoke-StarBreakerLoggedV23 {
         $Script:LastCommandLogPath = $LogPath
         $Script:LastCommandDisplay = $display
         $Script:LastActivityNote = $ActivityNote
+        $isP4KScan = Test-StarBreakerP4KScanArguments -Arguments $Arguments
         while ($null -ne $proc -and -not $proc.HasExited) {
             try {
                 if (Test-Path -LiteralPath $stdout) {
@@ -48337,7 +48811,11 @@ function Invoke-StarBreakerLoggedV23 {
             } catch { }
             $elapsed = (Get-Date) - $startTime
             $spinner = $spinnerFrames[$tick % $spinnerFrames.Count]
-            Write-ActiveCommandDashboard -CommandDisplay $display -LogPath $LogPath -ActivityNote $ActivityNote -Spinner $spinner -Elapsed $elapsed -Status "RUNNING"
+            $liveNote = $ActivityNote
+            if ($isP4KScan) {
+                $liveNote = Get-P4KQuietScanHeartbeatNote -BaseNote $ActivityNote -LogPath $LogPath -Elapsed $elapsed
+            }
+            Write-ActiveCommandDashboard -CommandDisplay $display -LogPath $LogPath -ActivityNote $liveNote -Spinner $spinner -Elapsed $elapsed -Status "RUNNING"
             Start-Sleep -Seconds 1
             $tick++
             try { $proc.Refresh() } catch { }
