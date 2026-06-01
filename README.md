@@ -18,6 +18,37 @@ The goal of this repo is to maintain an all-in-one workflow that brings together
 > [!IMPORTANT]
 > This guide is intended for personal learning, fan art, research, and community tooling. Treat your local `Data.p4k` files as read-only, do not redistribute extracted game assets, and respect CIG’s terms and community rules.
 
+> [!WARNING]
+>
+> ## Windows 11 Smart App Control must be Off before installing developer tools
+>
+> This workflow installs and runs developer tools such as **Git for Windows**, **Rust**, **Visual Studio Build Tools**, **Python**, **Node.js**, **CMake**, and related command-line components.
+>
+> On some Windows 11 systems, **Smart App Control** may block these tools or their DLL files before they can run. If Smart App Control is On or in Evaluation mode, setup may fail with messages like:
+>
+> * "Smart App Control blocked an app that may be unsafe"
+> * "Part of this app has been blocked"
+> * `msys-2.0.dll`
+> * `libintl-8.dll`
+> * `libpcre2-8-0.dll`
+> * `libiconv-2.dll`
+> * `libwinpthread-1.dll`
+> * `rustup-init.exe`
+> * `Bad Image`
+> * `0xc0e90002`
+>
+> Before running the installer or following the manual tool-install steps:
+>
+> 1. Open **Windows Security**.
+> 2. Go to **App & browser control**.
+> 3. Open **Smart App Control settings**.
+> 4. Set **Smart App Control** to **Off**.
+> 5. Run the installer again.
+>
+> The installer does **not** disable Smart App Control for you. This is a Windows security setting that must be changed by the user.
+>
+> If you keep Smart App Control On or in Evaluation mode, Windows may block Git, Rust, or other developer tools and the setup cannot reliably continue.
+
 ## What this guide covers
 
 - Setting up a clean Windows 11 power-user development environment
@@ -101,6 +132,9 @@ D:\dev
 Replace paths as needed if you use a different drive or folder layout.
 
 ## 1. Install base tools
+
+> [!IMPORTANT]
+> Before installing Git, Rust, Build Tools, Python, Node.js, or CMake, make sure **Windows Security > App & browser control > Smart App Control settings** is set to **Off**. If Smart App Control is On or in Evaluation mode, Windows may block developer tools or DLL files and setup may fail.
 
 Open **PowerShell as Administrator**.
 

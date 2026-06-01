@@ -9,7 +9,7 @@ set "DG_LAUNCHER_DIR=%~dp0"
 set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
-set "DG_SCRIPT_VERSION=v0.39"
+set "DG_SCRIPT_VERSION=v0.40"
 set "DG_SCRIPT_BUILD=%DG_SCRIPT_VERSION%"
 set "DG_VERSION=%DG_SCRIPT_VERSION%"
 set "DG_STAR_CITIZEN_TESTED_BUILDS=LIVE-4.8-and-older"
@@ -150,6 +150,11 @@ if /I "%DG_MODE%"=="hidden" (
 if "%ERRORLEVEL%"=="2" goto :ChooseInstallRoot
 call :SetProjectRootEnvironment
 if /I "%DG_MODE%"=="hidden" goto :HiddenPreview
+call :SmartAppControlCmdPreflight
+if errorlevel 1 (
+    set "DG_EXIT=%ERRORLEVEL%"
+    goto :Finished
+)
 goto :PrepareLiveMode
 
 :SetProjectRootEnvironment
@@ -159,6 +164,90 @@ set "SC_P4K_ROOT=%DG_DEVROOT%\scdata\p4k"
 set "SC_EXPORT_ROOT=%DG_DEVROOT%\scdata\exports"
 set "SC_WORK_ROOT=%DG_DEVROOT%\scdata\work"
 exit /b 0
+
+:ReadSmartAppControlState
+set "DG_SAC_STATE=Unknown"
+for /F "usebackq delims=" %%S in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='SilentlyContinue'; try { $raw=(Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop).VerifiedAndReputablePolicyState; switch([int]$raw){ 0 { 'Off' } 1 { 'Enforce' } 2 { 'Evaluation' } default { 'Unknown' } } } catch { 'Unknown' }"`) do set "DG_SAC_STATE=%%S"
+if "%DG_SAC_STATE%"=="" set "DG_SAC_STATE=Unknown"
+exit /b 0
+
+:PrintSmartAppControlInstructions
+echo Open Windows Security.
+echo Go to App ^& browser control.
+echo Open Smart App Control settings.
+echo Set Smart App Control to Off, then return to this window.
+exit /b 0
+
+:PrintSmartAppControlWarning
+echo.
+echo Smart App Control appears to be On or in Evaluation mode.
+echo This setup installs developer tools such as Git for Windows, Rust,
+echo Visual Studio Build Tools, Python, Node.js, and CMake.
+echo Windows may block those tools or their DLLs before they can run.
+echo Setup cannot reliably install developer tools while Smart App Control is enabled.
+echo.
+echo The installer cannot disable Smart App Control for you.
+echo Running as Administrator does not bypass Smart App Control.
+echo Defender exclusions may not bypass Smart App Control.
+echo.
+call :PrintSmartAppControlInstructions
+echo.
+exit /b 0
+
+:OpenSmartAppControlSettings
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='SilentlyContinue'; try { Start-Process 'windowsdefender://smartapp'; exit 0 } catch { }; try { Start-Process 'windowsdefender://appbrowser'; exit 0 } catch { }; exit 1"
+if errorlevel 1 (
+    echo.
+    echo Windows Security settings could not be opened automatically.
+    call :PrintSmartAppControlInstructions
+)
+exit /b 0
+
+:SmartAppControlCmdPreflight
+call :ReadSmartAppControlState
+if /I "%DG_SAC_STATE%"=="Off" (
+    echo.
+    echo Smart App Control preflight passed. State: Off.
+    exit /b 0
+)
+if /I "%DG_SAC_STATE%"=="Unknown" (
+    echo.
+    echo Smart App Control state could not be verified from the launcher.
+    echo The embedded setup will keep watching for Windows Security blocks.
+    exit /b 0
+)
+
+:SmartAppControlCmdStandby
+call :PrintSmartAppControlWarning
+choice /C YN /N /M "Open Smart App Control settings now? Y/N: "
+if "%ERRORLEVEL%"=="1" call :OpenSmartAppControlSettings
+echo.
+choice /C YN /N /M "Have you disabled Smart App Control? Y/N: "
+if "%ERRORLEVEL%"=="2" (
+    echo.
+    echo Smart App Control is still enabled. Setup stopped before installing developer tools.
+    echo Set Smart App Control to Off in Windows Security ^> App ^& browser control ^> Smart App Control settings, then rerun this installer.
+    exit /b 1
+)
+call :ReadSmartAppControlState
+if /I "%DG_SAC_STATE%"=="Off" (
+    echo.
+    echo Smart App Control is Off. Continuing setup.
+    exit /b 0
+)
+if /I "%DG_SAC_STATE%"=="Unknown" (
+    echo.
+    echo The launcher could not verify Smart App Control state after your change.
+    choice /C YN /N /M "Continue anyway because state could not be verified? Y/N: "
+    if "%ERRORLEVEL%"=="1" exit /b 0
+    echo.
+    echo Setup stopped. Set Smart App Control to Off, then rerun this installer.
+    exit /b 1
+)
+echo.
+echo Smart App Control still appears to be %DG_SAC_STATE%.
+echo Setup cannot continue to developer tool installation yet.
+goto :SmartAppControlCmdStandby
 
 :ValidateInstallRoot
 set "DG_ROOTCHECK=%TEMP%\SC-Zero-to-Hero-Setup-root-%RANDOM%%RANDOM%.txt"
@@ -867,7 +956,7 @@ $GuideRepoUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-a
 $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
-$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.39" }
+$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.40" }
 $testedBuildsFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_TESTED_BUILDS)) { [string]$env:DG_STAR_CITIZEN_TESTED_BUILDS } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { [string]$env:DG_STAR_CITIZEN_COMPAT } else { "LIVE-4.8-and-older" }
 $Script:ScriptVersion = $scriptVersionFromEnv
 $Script:InternalBuildVersion = $Script:ScriptVersion
@@ -941,6 +1030,7 @@ $Script:BranchStates = New-Object 'System.Collections.Generic.List[object]'
 $Script:SmartAppControlState = "Unknown"
 $Script:SmartAppControlPolicyValue = ""
 $Script:SmartAppControlPreflightDecision = "NotChecked"
+$Script:SmartAppControlPreflightStopReason = ""
 $Script:SmartAppControlBlocked = $false
 $Script:SmartAppControlBlockedReason = ""
 $Script:SmartAppControlBlockedPattern = ""
@@ -994,7 +1084,7 @@ function Test-InstallerPathUnderRoot {
 }
 
 function Test-NonLiveInstallerMode {
-    return ($Script:HarnessMode -or $Script:PlanOnly -or $SelfTest -or $Script:NoExternalActions)
+    return ($Script:HarnessMode -or $Script:PlanOnly -or $SelfTest -or $Script:NoExternalActions -or $Script:HiddenDryRun -or $Script:VisualPreviewMode)
 }
 
 function Get-InstallerAllowedWriteRoots {
@@ -1850,6 +1940,7 @@ function Save-SetupState {
                 state = [string]$Script:SmartAppControlState
                 policyValue = [string]$Script:SmartAppControlPolicyValue
                 preflightDecision = [string]$Script:SmartAppControlPreflightDecision
+                preflightStopReason = [string]$Script:SmartAppControlPreflightStopReason
                 blocked = [bool]$Script:SmartAppControlBlocked
                 blockedReason = [string]$Script:SmartAppControlBlockedReason
                 blockedPattern = [string]$Script:SmartAppControlBlockedPattern
@@ -1965,51 +2056,101 @@ function Test-SmartAppControlPreflightNeeded {
     return ([string]$State -in @("Enforce", "Evaluation"))
 }
 
+function New-SmartAppControlDecision {
+    param(
+        [string]$Status,
+        [string]$Reason,
+        [bool]$ShouldPrompt = $false,
+        [bool]$ShouldCancel = $false,
+        [bool]$ShouldContinue = $true,
+        [bool]$ShouldSkipTools = $false,
+        [bool]$ShouldStandby = $false,
+        [bool]$ShouldOpenSettings = $false,
+        [string]$Choice = ""
+    )
+    return [pscustomobject]@{
+        Status = $Status
+        ShouldPrompt = $ShouldPrompt
+        ShouldCancel = $ShouldCancel
+        ShouldContinue = $ShouldContinue
+        ShouldSkipTools = $ShouldSkipTools
+        ShouldStandby = $ShouldStandby
+        ShouldOpenSettings = $ShouldOpenSettings
+        Reason = $Reason
+        Choice = $Choice
+    }
+}
+
 function Resolve-SmartAppControlPreflightDecision {
     param(
         [string]$State = "Unknown",
         [bool]$InstallToolsEnabled = $true,
-        [bool]$NonLiveMode = $false,
-        [string]$UserChoice = ""
+        [bool]$NonLiveMode = $false
     )
 
     if (-not $InstallToolsEnabled) {
-        return [pscustomobject]@{ Status = "NotNeeded"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = "Tool installation is disabled."; Choice = "" }
+        return (New-SmartAppControlDecision -Status "NotNeeded" -Reason "Tool installation is disabled.")
     }
     if (-not (Test-SmartAppControlPreflightNeeded -State $State)) {
-        $status = if ([string]$State -eq "Off") { "NoWarningNeeded" } else { "UnknownState" }
-        $reason = if ([string]$State -eq "Off") { "Smart App Control appears Off." } else { "Smart App Control state could not be read; no hard preflight block was applied." }
-        return [pscustomobject]@{ Status = $status; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = $reason; Choice = "" }
+        if ([string]$State -eq "Off") {
+            return (New-SmartAppControlDecision -Status "Passed" -Reason "Smart App Control appears Off.")
+        }
+        return (New-SmartAppControlDecision -Status "UnknownState" -Reason "Smart App Control state could not be read; no hard preflight block was applied.")
     }
     if ($NonLiveMode) {
-        return [pscustomobject]@{ Status = "NonLiveWarning"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = "Smart App Control appears $State; non-live mode recorded the warning without prompting."; Choice = "" }
+        return (New-SmartAppControlDecision -Status "NonLiveWarning" -Reason "Smart App Control appears $State; non-live mode recorded the warning without prompting.")
     }
 
-    $choice = ([string]$UserChoice).Trim()
-    if ([string]::IsNullOrWhiteSpace($choice)) {
-        return [pscustomobject]@{ Status = "PromptNeeded"; ShouldPrompt = $true; ShouldCancel = $false; ShouldContinue = $false; ShouldSkipTools = $false; Reason = "Smart App Control appears $State and requires an explicit user decision before tool installs."; Choice = "" }
+    return (New-SmartAppControlDecision -Status "StandbyRequired" -ShouldPrompt $true -ShouldContinue $false -ShouldStandby $true -Reason "Smart App Control appears $State. Normal guided setup must wait until Smart App Control is Off before installing developer tools.")
+}
+
+function Resolve-SmartAppControlStandbyDecision {
+    param(
+        [string]$State = "Unknown",
+        [string]$OpenSettingsAnswer = "",
+        [string]$DisabledAnswer = "",
+        [string]$RecheckedState = "",
+        [string]$UnknownContinueAnswer = ""
+    )
+
+    $open = ([string]$OpenSettingsAnswer).Trim().ToUpperInvariant()
+    $disabled = ([string]$DisabledAnswer).Trim().ToUpperInvariant()
+    $unknownContinue = ([string]$UnknownContinueAnswer).Trim().ToUpperInvariant()
+    $choice = "Open=$open;Disabled=$disabled;UnknownContinue=$unknownContinue"
+    $shouldOpen = ($open -eq "Y")
+
+    if (-not (Test-SmartAppControlPreflightNeeded -State $State)) {
+        return (Resolve-SmartAppControlPreflightDecision -State $State -InstallToolsEnabled:$true -NonLiveMode:$false)
     }
-    switch -Regex ($choice) {
-        '^[1Cc]$' {
-            return [pscustomobject]@{ Status = "CancelForReview"; ShouldPrompt = $false; ShouldCancel = $true; ShouldContinue = $false; ShouldSkipTools = $true; Reason = "Smart App Control preflight cancelled so the user can review Windows Security settings before tool installs."; Choice = "1" }
-        }
-        '^[2Yy]$' {
-            return [pscustomobject]@{ Status = "ContinueAnyway"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $false; Reason = "Smart App Control appears $State; user chose to continue anyway."; Choice = "2" }
-        }
-        '^[3SsNn]$' {
-            return [pscustomobject]@{ Status = "SkipToolInstalls"; ShouldPrompt = $false; ShouldCancel = $false; ShouldContinue = $true; ShouldSkipTools = $true; Reason = "User skipped tool installs after Smart App Control preflight."; Choice = "3" }
-        }
-        default {
-            return [pscustomobject]@{ Status = "InvalidChoice"; ShouldPrompt = $true; ShouldCancel = $false; ShouldContinue = $false; ShouldSkipTools = $false; Reason = "Choose 1, 2, or 3 for the Smart App Control preflight."; Choice = $choice }
-        }
+    if ([string]::IsNullOrWhiteSpace($disabled)) {
+        return (New-SmartAppControlDecision -Status "StandbyPending" -ShouldPrompt $true -ShouldContinue $false -ShouldStandby $true -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control appears $State and setup is waiting for the user to disable it." -Choice $choice)
     }
+    if ($disabled -ne "Y") {
+        return (New-SmartAppControlDecision -Status "StoppedStillEnabled" -ShouldCancel $true -ShouldContinue $false -ShouldSkipTools $true -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control is still enabled. Setup stopped before installing developer tools. Set Smart App Control to Off in Windows Security > App & browser control > Smart App Control settings, then rerun this installer." -Choice $choice)
+    }
+
+    $rechecked = if ([string]::IsNullOrWhiteSpace($RecheckedState)) { "Unknown" } else { [string]$RecheckedState }
+    if ([string]$rechecked -eq "Off") {
+        return (New-SmartAppControlDecision -Status "PassedAfterDisable" -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control is Off after re-check; setup can continue." -Choice $choice)
+    }
+    if (Test-SmartAppControlPreflightNeeded -State $rechecked) {
+        return (New-SmartAppControlDecision -Status "StillEnabled" -ShouldPrompt $true -ShouldContinue $false -ShouldStandby $true -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control still appears $rechecked. Setup cannot reliably install developer tools yet." -Choice $choice)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($unknownContinue)) {
+        return (New-SmartAppControlDecision -Status "UnknownAfterRecheck" -ShouldPrompt $true -ShouldContinue $false -ShouldStandby $true -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control state could not be verified after re-check." -Choice $choice)
+    }
+    if ($unknownContinue -eq "Y") {
+        return (New-SmartAppControlDecision -Status "ContinueUnknown" -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control state could not be verified after re-check; user chose to continue with normal validation." -Choice $choice)
+    }
+    return (New-SmartAppControlDecision -Status "StoppedUnknown" -ShouldCancel $true -ShouldContinue $false -ShouldSkipTools $true -ShouldOpenSettings:$shouldOpen -Reason "Smart App Control state could not be verified. Setup stopped before installing developer tools." -Choice $choice)
 }
 
 function Write-SmartAppControlReviewInstructions {
     Write-Host "Open Windows Security." -ForegroundColor Cyan
     Write-Host "Go to App & browser control." -ForegroundColor Cyan
     Write-Host "Open Smart App Control settings." -ForegroundColor Cyan
-    Write-Host "Review whether Smart App Control is On, Evaluation, or Off." -ForegroundColor Cyan
+    Write-Host "Set Smart App Control to Off before installing developer tools." -ForegroundColor Cyan
     Write-Host "Microsoft behavior varies by Windows build; read the Windows Security UI before changing the setting." -ForegroundColor DarkYellow
 }
 
@@ -2026,23 +2167,71 @@ function Show-SmartAppControlPreflightWarning {
     Write-Host "Defender exclusions may not bypass Smart App Control." -ForegroundColor DarkYellow
     Write-SmartAppControlReviewInstructions
     Write-Host ""
-    Write-Host "Choose:" -ForegroundColor Cyan
-    Write-Host "  1. Cancel now so I can review Smart App Control settings, then rerun setup" -ForegroundColor Cyan
-    Write-Host "  2. Continue anyway; I understand tool installs may be blocked" -ForegroundColor Cyan
-    Write-Host "  3. Skip tool installs and continue only with validation/steps that can use existing tools" -ForegroundColor Cyan
-    Write-Host "Recommended: 1" -ForegroundColor Yellow
+    Write-Host "Setup will wait here until Smart App Control is Off, or exit cleanly if you choose not to change it now." -ForegroundColor Yellow
     Write-Host ""
+}
+
+function Read-InstallerYesNoChoice {
+    param([Parameter(Mandatory=$true)][string]$Prompt)
+    while ($true) {
+        $answer = (Read-Host $Prompt).Trim()
+        if ($answer -match '^[Yy]$') { return "Y" }
+        if ($answer -match '^[Nn]$') { return "N" }
+        Write-Warning "Choose Y or N."
+    }
+}
+
+function Open-SmartAppControlSettings {
+    if ($Script:NoGui -or (Test-NonLiveInstallerMode)) {
+        Write-Host "Non-live mode will not open Windows Security." -ForegroundColor DarkYellow
+        Write-SmartAppControlReviewInstructions
+        return $false
+    }
+    try {
+        Start-Process -FilePath "windowsdefender://smartapp" -ErrorAction Stop | Out-Null
+        return $true
+    } catch { }
+    try {
+        Start-Process -FilePath "windowsdefender://appbrowser" -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-Warning "Could not open Windows Security automatically."
+        Write-SmartAppControlReviewInstructions
+        return $false
+    }
 }
 
 function Read-SmartAppControlPreflightDecision {
     param([string]$State = "Unknown")
     while ($true) {
         Show-SmartAppControlPreflightWarning -State $State
-        $answer = Read-Host "Smart App Control choice [1/2/3, default 1]"
-        if ([string]::IsNullOrWhiteSpace($answer)) { $answer = "1" }
-        $decision = Resolve-SmartAppControlPreflightDecision -State $State -InstallToolsEnabled:$true -NonLiveMode:$false -UserChoice $answer
-        if (-not [bool]$decision.ShouldPrompt) { return $decision }
-        Write-Warning ([string]$decision.Reason)
+        $openSettings = Read-InstallerYesNoChoice -Prompt "Open Smart App Control settings now? Y/N"
+        if ($openSettings -eq "Y") {
+            [void](Open-SmartAppControlSettings)
+        } else {
+            Write-SmartAppControlReviewInstructions
+        }
+
+        $disabledAnswer = Read-InstallerYesNoChoice -Prompt "Have you disabled Smart App Control? Y/N"
+        if ($disabledAnswer -eq "N") {
+            return (Resolve-SmartAppControlStandbyDecision -State $State -OpenSettingsAnswer $openSettings -DisabledAnswer $disabledAnswer)
+        }
+
+        $current = Get-SmartAppControlState
+        $Script:SmartAppControlState = [string]$current.State
+        $Script:SmartAppControlPolicyValue = [string]$current.RawValue
+        $decision = Resolve-SmartAppControlStandbyDecision -State $State -OpenSettingsAnswer $openSettings -DisabledAnswer $disabledAnswer -RecheckedState $Script:SmartAppControlState
+        if ([string]$decision.Status -eq "StillEnabled") {
+            Write-Warning ([string]$decision.Reason)
+            $State = [string]$Script:SmartAppControlState
+            continue
+        }
+        if ([string]$decision.Status -eq "UnknownAfterRecheck") {
+            Write-Warning "The installer could not verify Smart App Control state after re-check."
+            $unknownContinue = Read-InstallerYesNoChoice -Prompt "Continue with normal validation even though Smart App Control state is unknown? Y/N"
+            return (Resolve-SmartAppControlStandbyDecision -State $State -OpenSettingsAnswer $openSettings -DisabledAnswer $disabledAnswer -RecheckedState "Unknown" -UnknownContinueAnswer $unknownContinue)
+        }
+        return $decision
     }
 }
 
@@ -2056,6 +2245,8 @@ function Invoke-SmartAppControlPreflight {
         $Script:SmartAppControlPreflightDecision = [string]$decision.Status
         if ([string]$Script:SmartAppControlState -eq "Unknown") {
             Write-Host "Smart App Control state could not be read; setup will continue with normal tool validation." -ForegroundColor DarkYellow
+            $Script:CurrentStepResultStatus = "WARN"
+            $Script:CurrentStepResultReason = [string]$decision.Reason
         } else {
             Write-Host "Smart App Control state: $($Script:SmartAppControlState)" -ForegroundColor Green
         }
@@ -2071,18 +2262,24 @@ function Invoke-SmartAppControlPreflight {
     $Script:SmartAppControlPreflightDecision = [string]$decision.Status
     if ([bool]$decision.ShouldCancel) {
         $Script:SmartAppControlToolInstallsSkipped = $true
+        $Script:SmartAppControlPreflightStopReason = [string]$decision.Reason
         $Script:CurrentStepResultStatus = "FATAL"
         $Script:CurrentStepResultReason = [string]$decision.Reason
         return
     }
     if ([bool]$decision.ShouldSkipTools) {
         $Script:SmartAppControlToolInstallsSkipped = $true
+        $Script:SmartAppControlPreflightStopReason = [string]$decision.Reason
         Set-CurrentSetupStepSkipped -Id "smart-app-control-preflight" -Name "Check Smart App Control before developer tool installs" -Reason ([string]$decision.Reason)
         return
     }
-    if ([string]$decision.Status -eq "ContinueAnyway" -or [string]$decision.Status -eq "NonLiveWarning") {
+    if ([string]$decision.Status -eq "NonLiveWarning" -or [string]$decision.Status -eq "ContinueUnknown") {
         $Script:CurrentStepResultStatus = "WARN"
         $Script:CurrentStepResultReason = [string]$decision.Reason
+        return
+    }
+    if ([string]$decision.Status -eq "PassedAfterDisable") {
+        Write-Host "Smart App Control preflight passed after re-check." -ForegroundColor Green
         return
     }
 }
@@ -2163,6 +2360,7 @@ function Get-SmartAppControlToolSkipReason {
         return "Smart App Control blocked a developer tool, so remaining tool installs were skipped."
     }
     if ($Script:SmartAppControlToolInstallsSkipped) {
+        if (-not [string]::IsNullOrWhiteSpace($Script:SmartAppControlPreflightStopReason)) { return [string]$Script:SmartAppControlPreflightStopReason }
         return "Tool installs were skipped after Smart App Control preflight."
     }
     return ""
@@ -8476,8 +8674,13 @@ function Show-SetupOutcomeSummary {
     Write-SmartAppControlBlockedSummary
     if ((-not $Script:SmartAppControlBlocked) -and $Script:SmartAppControlToolInstallsSkipped) {
         Write-Host ""
-        Write-Host "Tool installs were skipped after Smart App Control preflight." -ForegroundColor Yellow
-        Write-Host "Steps that require missing developer tools will be skipped by dependency checks." -ForegroundColor Yellow
+        if (-not [string]::IsNullOrWhiteSpace($Script:SmartAppControlPreflightStopReason)) {
+            Write-Host $Script:SmartAppControlPreflightStopReason -ForegroundColor Yellow
+            Write-Host "Rerun this installer after Smart App Control is Off; completed steps will be revalidated and skipped where possible." -ForegroundColor Yellow
+        } else {
+            Write-Host "Tool installs were skipped after Smart App Control preflight." -ForegroundColor Yellow
+            Write-Host "Steps that require missing developer tools will be skipped by dependency checks." -ForegroundColor Yellow
+        }
     }
 
     if ($failureCount -gt 0) {
@@ -9072,28 +9275,38 @@ function Invoke-SelfTest {
 
     try {
         $offDecision = Resolve-SmartAppControlPreflightDecision -State "Off" -InstallToolsEnabled $true
-        Assert-SelfTest ([string]$offDecision.Status -eq "NoWarningNeeded" -and -not [bool]$offDecision.ShouldPrompt) "SAC Off incorrectly required a preflight warning."
+        Assert-SelfTest ([string]$offDecision.Status -eq "Passed" -and -not [bool]$offDecision.ShouldPrompt) "SAC Off incorrectly required a preflight warning."
 
         $enforceDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true
-        Assert-SelfTest ([string]$enforceDecision.Status -eq "PromptNeeded" -and [bool]$enforceDecision.ShouldPrompt) "SAC Enforce did not require a preflight decision."
+        Assert-SelfTest ([string]$enforceDecision.Status -eq "StandbyRequired" -and [bool]$enforceDecision.ShouldStandby) "SAC Enforce did not require standby before tool installs."
 
         $evaluationDecision = Resolve-SmartAppControlPreflightDecision -State "Evaluation" -InstallToolsEnabled $true
-        Assert-SelfTest ([string]$evaluationDecision.Status -eq "PromptNeeded" -and [bool]$evaluationDecision.ShouldPrompt) "SAC Evaluation did not require a preflight decision."
+        Assert-SelfTest ([string]$evaluationDecision.Status -eq "StandbyRequired" -and [bool]$evaluationDecision.ShouldStandby) "SAC Evaluation did not require standby before tool installs."
 
         $unknownDecision = Resolve-SmartAppControlPreflightDecision -State "Unknown" -InstallToolsEnabled $true
         Assert-SelfTest ([string]$unknownDecision.Status -eq "UnknownState" -and -not [bool]$unknownDecision.ShouldPrompt -and [bool]$unknownDecision.ShouldContinue) "SAC Unknown did not continue without a hard block."
 
-        $cancelDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true -UserChoice "1"
-        Assert-SelfTest ([string]$cancelDecision.Status -eq "CancelForReview" -and [bool]$cancelDecision.ShouldCancel -and [bool]$cancelDecision.ShouldSkipTools) "SAC option 1 did not cancel for review and skip tool phase."
-
-        $continueDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true -UserChoice "2"
-        Assert-SelfTest ([string]$continueDecision.Status -eq "ContinueAnyway" -and [bool]$continueDecision.ShouldContinue -and -not [bool]$continueDecision.ShouldSkipTools) "SAC option 2 did not continue anyway."
-
-        $skipDecision = Resolve-SmartAppControlPreflightDecision -State "Evaluation" -InstallToolsEnabled $true -UserChoice "3"
-        Assert-SelfTest ([string]$skipDecision.Status -eq "SkipToolInstalls" -and [bool]$skipDecision.ShouldSkipTools) "SAC option 3 did not skip tool installs."
-
         $nonLiveDecision = Resolve-SmartAppControlPreflightDecision -State "Enforce" -InstallToolsEnabled $true -NonLiveMode $true
         Assert-SelfTest ([string]$nonLiveDecision.Status -eq "NonLiveWarning" -and -not [bool]$nonLiveDecision.ShouldPrompt) "SAC non-live decision tried to prompt."
+
+        $noOpenStopDecision = Resolve-SmartAppControlStandbyDecision -State "Enforce" -OpenSettingsAnswer "N" -DisabledAnswer "N"
+        Assert-SelfTest ([string]$noOpenStopDecision.Status -eq "StoppedStillEnabled" -and [bool]$noOpenStopDecision.ShouldCancel -and [bool]$noOpenStopDecision.ShouldSkipTools) "SAC standby N answer did not stop setup before tool installs."
+        Assert-SelfTest (([string]$noOpenStopDecision.Reason) -match "Smart App Control is still enabled. Setup stopped before installing developer tools.") "SAC standby stop reason was not clear."
+
+        $stillEnabledDecision = Resolve-SmartAppControlStandbyDecision -State "Enforce" -OpenSettingsAnswer "Y" -DisabledAnswer "Y" -RecheckedState "Evaluation"
+        Assert-SelfTest ([string]$stillEnabledDecision.Status -eq "StillEnabled" -and [bool]$stillEnabledDecision.ShouldStandby) "SAC standby did not loop when re-check was still On/Evaluation."
+
+        $passedAfterDisableDecision = Resolve-SmartAppControlStandbyDecision -State "Evaluation" -OpenSettingsAnswer "Y" -DisabledAnswer "Y" -RecheckedState "Off"
+        Assert-SelfTest ([string]$passedAfterDisableDecision.Status -eq "PassedAfterDisable" -and [bool]$passedAfterDisableDecision.ShouldContinue) "SAC standby did not continue after Off re-check."
+
+        $unknownAfterRecheckDecision = Resolve-SmartAppControlStandbyDecision -State "Enforce" -OpenSettingsAnswer "N" -DisabledAnswer "Y" -RecheckedState "Unknown"
+        Assert-SelfTest ([string]$unknownAfterRecheckDecision.Status -eq "UnknownAfterRecheck" -and [bool]$unknownAfterRecheckDecision.ShouldStandby) "SAC unknown re-check did not ask for an explicit continue/cancel decision."
+
+        $unknownContinueDecision = Resolve-SmartAppControlStandbyDecision -State "Enforce" -OpenSettingsAnswer "N" -DisabledAnswer "Y" -RecheckedState "Unknown" -UnknownContinueAnswer "Y"
+        Assert-SelfTest ([string]$unknownContinueDecision.Status -eq "ContinueUnknown" -and [bool]$unknownContinueDecision.ShouldContinue) "SAC unknown re-check Y did not continue with warning semantics."
+
+        $unknownStopDecision = Resolve-SmartAppControlStandbyDecision -State "Enforce" -OpenSettingsAnswer "N" -DisabledAnswer "Y" -RecheckedState "Unknown" -UnknownContinueAnswer "N"
+        Assert-SelfTest ([string]$unknownStopDecision.Status -eq "StoppedUnknown" -and [bool]$unknownStopDecision.ShouldCancel) "SAC unknown re-check N did not stop cleanly."
 
         $blockedGitDll = Test-SmartAppControlBlockedOutput -ToolName "Git for Windows" -OutputLines @(
             "Part of this app has been blocked by Smart App Control.",
@@ -9128,6 +9341,7 @@ function Invoke-SelfTest {
         $oldSmartAppControlState = $Script:SmartAppControlState
         $oldSmartAppControlPolicyValue = $Script:SmartAppControlPolicyValue
         $oldSmartAppControlPreflightDecision = $Script:SmartAppControlPreflightDecision
+        $oldSmartAppControlPreflightStopReason = $Script:SmartAppControlPreflightStopReason
         $oldSmartAppControlBlocked = $Script:SmartAppControlBlocked
         $oldSmartAppControlBlockedReason = $Script:SmartAppControlBlockedReason
         $oldSmartAppControlBlockedPattern = $Script:SmartAppControlBlockedPattern
@@ -9142,6 +9356,7 @@ function Invoke-SelfTest {
         $Script:SmartAppControlState = "Enforce"
         $Script:SmartAppControlPolicyValue = "1"
         $Script:SmartAppControlPreflightDecision = "HarnessSynthetic"
+        $Script:SmartAppControlPreflightStopReason = ""
         $Script:SmartAppControlBlocked = $false
         $Script:SmartAppControlBlockedReason = ""
         $Script:SmartAppControlBlockedPattern = ""
@@ -9192,6 +9407,7 @@ function Invoke-SelfTest {
         $Script:SmartAppControlBlocked = $false
         $Script:SmartAppControlBlockedReason = ""
         $Script:SmartAppControlBlockedPattern = ""
+        $Script:SmartAppControlPreflightStopReason = ""
         $Script:SmartAppControlToolInstallsSkipped = $false
         Invoke-ToolSetupStep -Id "install-git" -Name "Install or validate Git" -ScriptBlock {
             [void](Set-SmartAppControlBlockedFromOutput -ToolName "Rust" -OutputLines @("rustup-init.exe", "Part of this app has been blocked", "error status 0xc0e90002"))
@@ -9215,6 +9431,7 @@ function Invoke-SelfTest {
         $Script:SmartAppControlState = $oldSmartAppControlState
         $Script:SmartAppControlPolicyValue = $oldSmartAppControlPolicyValue
         $Script:SmartAppControlPreflightDecision = $oldSmartAppControlPreflightDecision
+        $Script:SmartAppControlPreflightStopReason = $oldSmartAppControlPreflightStopReason
         $Script:SmartAppControlBlocked = $oldSmartAppControlBlocked
         $Script:SmartAppControlBlockedReason = $oldSmartAppControlBlockedReason
         $Script:SmartAppControlBlockedPattern = $oldSmartAppControlBlockedPattern
