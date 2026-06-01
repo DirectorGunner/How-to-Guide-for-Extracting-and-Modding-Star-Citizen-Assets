@@ -9,7 +9,7 @@ set "DG_LAUNCHER_DIR=%~dp0"
 set "DG_DEVROOT=D:\dev"
 set "DG_EXIT=0"
 set "DG_MODE=live"
-set "DG_SCRIPT_VERSION=v0.40"
+set "DG_SCRIPT_VERSION=v0.41"
 set "DG_SCRIPT_BUILD=%DG_SCRIPT_VERSION%"
 set "DG_VERSION=%DG_SCRIPT_VERSION%"
 set "DG_STAR_CITIZEN_TESTED_BUILDS=LIVE-4.8-and-older"
@@ -956,7 +956,7 @@ $GuideRepoUrl = "https://github.com/DirectorGunner/How-to-Guide-for-Extracting-a
 $GuideRepoPath = Join-Path $StarCitizenRoot $GuideRepoName
 $SetupSummaryPath = Join-Path $ScLogsRoot ("setup-summary-{0}.txt" -f (Get-Date).ToString('yyyyMMdd-HHmmss'))
 $SetupCacheRoot = Join-Path $ScDataRoot ".setup-cache"
-$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.40" }
+$scriptVersionFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_VERSION)) { [string]$env:DG_SCRIPT_VERSION } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_SCRIPT_BUILD)) { [string]$env:DG_SCRIPT_BUILD } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_VERSION)) { [string]$env:DG_VERSION } else { "v0.41" }
 $testedBuildsFromEnv = if (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_TESTED_BUILDS)) { [string]$env:DG_STAR_CITIZEN_TESTED_BUILDS } elseif (-not [string]::IsNullOrWhiteSpace($env:DG_STAR_CITIZEN_COMPAT)) { [string]$env:DG_STAR_CITIZEN_COMPAT } else { "LIVE-4.8-and-older" }
 $Script:ScriptVersion = $scriptVersionFromEnv
 $Script:InternalBuildVersion = $Script:ScriptVersion
@@ -1012,6 +1012,7 @@ $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'  # pe
 $Script:CurrentStepStart = $null         # set by Invoke-SetupStep at start of each step
 $Script:CurrentStepId = ""               # so the failure handler can emit a tailored resume hint
 $Script:LongStepThresholdSeconds = 300   # >5 minutes is a "long" step (gets sound notification)
+$Script:ProgressTransitionHoldMilliseconds = 750
 # v12 additions
 $Script:LastDirectorySizeBytes = @{}     # path -> last sampled byte total (populated by Get-DirectorySizeApprox)
 $Script:VSCacheSamples = New-Object 'System.Collections.Generic.List[object]'  # rolling samples (timestamp, bytes) for throughput math
@@ -1037,6 +1038,12 @@ $Script:SmartAppControlBlockedPattern = ""
 $Script:SmartAppControlToolInstallsSkipped = $false
 $Script:OrchestrationRepoPath = ""
 $Script:BlenderState = [ordered]@{ status = "NotStarted"; exe = ""; version = ""; installRoot = ""; userConfigRoot = ""; addonLinked = $false; addonLinkType = "" }
+$Script:AuroraImportState = [ordered]@{
+    status = "NotStarted"; reason = ""; sceneJson = ""; packageRoot = ""; helperLog = ""; stdoutLog = ""; stderrLog = ""
+    objectCount = 0; meshObjectCount = 0; nonzeroUsedMeshDatablockCount = 0; collectionInstanceCount = 0; actionCount = 0; linkedLibraryCount = 0
+    missingAssetCount = 0; meshAssetReferenceCount = 0; existingMeshAssetCount = 0; suspiciousZstdBlendCount = 0
+    errors = @()
+}
 $Script:P4KState = [ordered]@{ status = "NotStarted"; build = ""; source = ""; destination = ""; partialDestination = ""; sizeBytes = 0; spaceWarning = $false; readOnly = $false; skippedReason = ""; channel = ""; starCitizenExe = ""; productVersion = ""; fileVersion = "" }
 $Script:AgentGuidanceState = [ordered]@{
     status = "NotStarted"; reason = ""
@@ -1966,6 +1973,26 @@ function Save-SetupState {
                 addonLinked = [bool]$Script:BlenderState.addonLinked
                 addonLinkType = [string]$Script:BlenderState.addonLinkType
             }
+            auroraImport = [ordered]@{
+                status = [string]$Script:AuroraImportState.status
+                reason = [string]$Script:AuroraImportState.reason
+                sceneJson = [string]$Script:AuroraImportState.sceneJson
+                packageRoot = [string]$Script:AuroraImportState.packageRoot
+                helperLog = [string]$Script:AuroraImportState.helperLog
+                stdoutLog = [string]$Script:AuroraImportState.stdoutLog
+                stderrLog = [string]$Script:AuroraImportState.stderrLog
+                objectCount = [int](Get-SafeInt64Value $Script:AuroraImportState.objectCount)
+                meshObjectCount = [int](Get-SafeInt64Value $Script:AuroraImportState.meshObjectCount)
+                nonzeroUsedMeshDatablockCount = [int](Get-SafeInt64Value $Script:AuroraImportState.nonzeroUsedMeshDatablockCount)
+                collectionInstanceCount = [int](Get-SafeInt64Value $Script:AuroraImportState.collectionInstanceCount)
+                actionCount = [int](Get-SafeInt64Value $Script:AuroraImportState.actionCount)
+                linkedLibraryCount = [int](Get-SafeInt64Value $Script:AuroraImportState.linkedLibraryCount)
+                missingAssetCount = [int](Get-SafeInt64Value $Script:AuroraImportState.missingAssetCount)
+                meshAssetReferenceCount = [int](Get-SafeInt64Value $Script:AuroraImportState.meshAssetReferenceCount)
+                existingMeshAssetCount = [int](Get-SafeInt64Value $Script:AuroraImportState.existingMeshAssetCount)
+                suspiciousZstdBlendCount = [int](Get-SafeInt64Value $Script:AuroraImportState.suspiciousZstdBlendCount)
+                errors = @($Script:AuroraImportState.errors)
+            }
             p4k = [ordered]@{
                 status = [string]$Script:P4KState.status
                 build = [string]$Script:P4KState.build
@@ -2498,9 +2525,31 @@ function Test-EnoughSpaceForLargeCopy {
     }
 }
 
+function Get-ProgressTransitionHoldMilliseconds {
+    if ($Script:HarnessMode -or $SelfTest -or $Script:PlanOnly -or $Script:HiddenDryRun -or $Script:VisualPreviewMode -or $Script:NoPause) { return 0 }
+    try { return [Math]::Max(0, [int]$Script:ProgressTransitionHoldMilliseconds) } catch { return 0 }
+}
+
+function Invoke-ProgressTransitionHold {
+    $ms = Get-ProgressTransitionHoldMilliseconds
+    if ($ms -gt 0) { Start-Sleep -Milliseconds $ms }
+}
+
+function Test-StepCacheMarkerAllowed {
+    param([string]$StepId)
+    if ([string]$StepId -eq "aurora-example") {
+        return ([string]$Script:AuroraImportState.status -eq "OK")
+    }
+    return $true
+}
+
 function Set-StepCacheMarker {
     param([string]$StepId, [string]$ValidationKey = "")
     if ($DryRun -or $Script:HiddenDryRun -or [string]::IsNullOrWhiteSpace($StepId)) { return }
+    if (-not (Test-StepCacheMarkerAllowed -StepId $StepId)) {
+        Write-Host ("Skipping cache marker for {0}; success criteria were not met." -f $StepId) -ForegroundColor DarkYellow
+        return
+    }
     try {
         Ensure-Directory $SetupCacheRoot
         $path = Join-Path $SetupCacheRoot ("$StepId.ok")
@@ -2705,11 +2754,19 @@ function Find-BlenderInstalls {
     try { $cmd = Get-Command blender.exe -ErrorAction SilentlyContinue; if ($cmd) { [void]$found.Add($cmd.Source) } } catch { }
     $common = @(
         "C:\Program Files\Blender Foundation\Blender*\blender.exe",
+        "C:\Program Files\Blender Foundation\Blender *\blender.exe",
         "C:\Program Files (x86)\Blender Foundation\Blender*\blender.exe",
+        "C:\Program Files (x86)\Blender Foundation\Blender *\blender.exe",
         "C:\Blender Foundation\Blender*\blender.exe",
+        "C:\Blender Foundation\Blender *\blender.exe",
         "D:\Blender Foundation\Blender*\blender.exe",
+        "D:\Blender Foundation\Blender *\blender.exe",
         (Join-Path $env:LOCALAPPDATA "Programs\Blender*\blender.exe"),
-        (Join-Path $DevRoot "Blender Foundation\Blender*\blender.exe")
+        (Join-Path $env:LOCALAPPDATA "Programs\Blender *\blender.exe"),
+        (Join-Path $DevRoot "Blender Foundation\Blender*\blender.exe"),
+        (Join-Path $DevRoot "Blender Foundation\Blender *\blender.exe"),
+        (Join-Path $DevRoot "blender\blender.exe"),
+        (Join-Path $DevRoot "Blender\blender.exe")
     )
     foreach ($pattern in $common) {
         try { Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object { [void]$found.Add($_.FullName) } } catch { }
@@ -4592,6 +4649,7 @@ function Invoke-SetupStep {
         }) | Out-Null
         Add-SetupSkipRecord -Id $Id -Name $Name -Reason $skipReason
         Save-SetupState
+        Invoke-ProgressTransitionHold
         return
     }
 
@@ -4630,6 +4688,7 @@ function Invoke-SetupStep {
             }) | Out-Null
             Add-SetupSkipRecord -Id $Id -Name $Name -Reason $reason
             Save-SetupState
+            Invoke-ProgressTransitionHold
             return
         }
         if ($softStatus -eq "WARN") {
@@ -4641,6 +4700,7 @@ function Invoke-SetupStep {
                 Id = $Id; Name = $Name; ElapsedSeconds = [Math]::Round($elapsed.TotalSeconds, 1); Status = "WARN"; Reason = $reason
             }) | Out-Null
             Save-SetupState
+            Invoke-ProgressTransitionHold
             return
         }
         if ($softStatus -in @("FAIL", "FAILED", "FATAL")) {
@@ -4660,6 +4720,7 @@ function Invoke-SetupStep {
             $failureMessageShown = $true
             Write-Host ("Reason: {0}" -f $reason) -ForegroundColor Red
             Save-SetupState
+            Invoke-ProgressTransitionHold
             if ($statusText -eq "FATAL") { throw $reason }
             return
         }
@@ -4673,6 +4734,7 @@ function Invoke-SetupStep {
         if ($elapsed.TotalSeconds -ge $Script:LongStepThresholdSeconds) {
             try { [System.Media.SystemSounds]::Asterisk.Play() } catch { }
         }
+        Invoke-ProgressTransitionHold
     } catch {
         $elapsed = (Get-Date) - $stepStart
         $reason = $_.Exception.Message
@@ -4711,7 +4773,7 @@ function Invoke-SetupStep {
             }
         }
         Save-SetupState
-        Start-Sleep -Milliseconds 750
+        Invoke-ProgressTransitionHold
         if ($statusText -eq "FATAL") { throw }
         return
     }
@@ -4737,6 +4799,35 @@ function Show-SetupPlan {
     elseif ($Script:HiddenDryRun) { Write-Host "Mode: visual preview" -ForegroundColor Magenta }
     elseif ($DryRun) { Write-Host "Mode: dry run" -ForegroundColor Yellow }
     if ($NoProgressHeader) { Write-Host "Progress header: disabled" } else { Write-Host "Progress header: enabled" }
+}
+
+function Show-RerunDiagnostics {
+    if ($Script:HiddenDryRun -or $Script:VisualPreviewMode -or $Script:PlanOnly) { return }
+    if ([string]::IsNullOrWhiteSpace($Script:SetupStatePath) -or -not (Test-Path -LiteralPath $Script:SetupStatePath)) {
+        Write-Host "Previous setup-state: not found; this looks like a first run for this root." -ForegroundColor DarkCyan
+        return
+    }
+    try {
+        $state = Get-Content -LiteralPath $Script:SetupStatePath -Raw -ErrorAction Stop | ConvertFrom-Json
+        Write-Host "Previous setup-state found; rerun will revalidate completed steps where practical." -ForegroundColor DarkCyan
+        $weak = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($step in @($state.stepTimings)) {
+            $status = ""
+            $id = ""
+            try { $status = [string]$step.status; $id = [string]$step.id } catch { }
+            if ($status -in @("WARN","FAILED","FATAL","SKIPPED")) { [void]$weak.Add(("{0}:{1}" -f $id, $status)) }
+        }
+        $auroraMarker = Join-Path $SetupCacheRoot "aurora-example.ok"
+        if (Test-Path -LiteralPath $auroraMarker) {
+            [void]$weak.Add("aurora-example:old OK marker will be ignored unless the new Blender mesh validation passes")
+        }
+        if ($weak.Count -gt 0) {
+            Write-Host "Rerun diagnostics: previous weak/failed/skipped states detected:" -ForegroundColor Yellow
+            foreach ($item in @($weak.ToArray() | Select-Object -First 12)) { Write-Host ("  - " + $item) -ForegroundColor DarkYellow }
+        }
+    } catch {
+        Write-Warning "Previous setup-state exists but could not be read: $($_.Exception.Message)"
+    }
 }
 
 function Get-SetupPlanSnapshot {
@@ -5149,6 +5240,30 @@ function Test-GitBlockedComponentOutput {
     return (Test-SmartAppControlBlockedOutput -OutputLines $OutputLines -ToolName "Git for Windows")
 }
 
+function Test-GitDubiousOwnershipOutput {
+    param([string[]]$OutputLines = @())
+    $text = (@($OutputLines) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [pscustomobject]@{ Blocked = $false; Reason = ""; Pattern = "" }
+    }
+    $patterns = @(
+        'detected dubious ownership',
+        'safe\.directory',
+        'WDAGUtilityAccount',
+        'repository is owned by someone else'
+    )
+    foreach ($pattern in $patterns) {
+        if ($text -match $pattern) {
+            return [pscustomobject]@{
+                Blocked = $true
+                Pattern = $pattern
+                Reason = "Git works, but a repository under the selected DevRoot appears to be blocked by Windows Sandbox or mapped-folder ownership. Map only the needed scdata folder for capacity when possible, or review the repo inside a non-mapped local DevRoot. The installer will not write global safe.directory config automatically."
+            }
+        }
+    }
+    return [pscustomobject]@{ Blocked = $false; Reason = ""; Pattern = "" }
+}
+
 function New-GitHealthCheckResultFromCommandResults {
     param([object[]]$CommandResults = @())
 
@@ -5180,6 +5295,16 @@ function New-GitHealthCheckResultFromCommandResults {
             return [pscustomobject]@{
                 Ready = $false; Status = "Blocked"; Reason = [string]$blocked.Reason
                 Pattern = [string]$blocked.Pattern; Version = $version; Command = $command
+                OutputSummary = $summary
+            }
+        }
+
+        $dubious = Test-GitDubiousOwnershipOutput -OutputLines $output
+        if ([bool]$dubious.Blocked) {
+            $summary = (@($allOutput.ToArray()) | Select-Object -First 6) -join " | "
+            return [pscustomobject]@{
+                Ready = $false; Status = "MappedFolderOwnership"; Reason = [string]$dubious.Reason
+                Pattern = [string]$dubious.Pattern; Version = $version; Command = $command
                 OutputSummary = $summary
             }
         }
@@ -5248,6 +5373,9 @@ function Invoke-GitHealthCheck {
     $initial = New-GitHealthCheckResultFromCommandResults -CommandResults @($results.ToArray())
     if (-not [bool]$initial.Ready) { return $initial }
 
+    if ([string]::IsNullOrWhiteSpace($WorkRoot) -and -not (Test-NonLiveInstallerMode)) {
+        try { $WorkRoot = Join-Path ([IO.Path]::GetTempPath()) "SC-Zero-to-Hero-GitHealth" } catch { $WorkRoot = "" }
+    }
     if ([string]::IsNullOrWhiteSpace($WorkRoot)) { $WorkRoot = $Script:AgentWorkRoot }
     if ([string]::IsNullOrWhiteSpace($WorkRoot)) { $WorkRoot = $Script:OriginalAgentWorkRoot }
     if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
@@ -6655,7 +6783,8 @@ function Install-BaseTools {
         }
 
         $gitExe = if (-not [string]::IsNullOrWhiteSpace([string]$gitCmd.Source)) { [string]$gitCmd.Source } else { "git" }
-        $health = Invoke-GitHealthCheck -GitExe $gitExe -WorkRoot $AgentWorkRoot
+        $gitHealthWorkRoot = if (Test-NonLiveInstallerMode) { $AgentWorkRoot } else { "" }
+        $health = Invoke-GitHealthCheck -GitExe $gitExe -WorkRoot $gitHealthWorkRoot
         if (-not [bool]$health.Ready) {
             Write-Warning ([string]$health.Reason)
             if (-not [string]::IsNullOrWhiteSpace([string]$health.OutputSummary)) {
@@ -6877,6 +7006,18 @@ function Set-RepoLocalGitIdentity {
 function Get-GitignoreRulesForRepoRole {
     param([string]$Role)
     $common = @("target/","bin/","obj/","node_modules/",".venv/","venv/","__pycache__/","*.pyc",".env","*.log")
+    if ($Role -eq "workspace-control") {
+        return @(
+            "# This is a workspace-control repo. Child tool repos, prompts, logs, reports, scdata, and generated caches stay untracked.",
+            "*",
+            "!.gitignore",
+            "!AGENTS.md",
+            "!CLAUDE.md",
+            "!Open-StarCitizen-Workspace.cmd",
+            "!_workspace/",
+            "!_workspace/*.code-workspace"
+        )
+    }
     if ($Role -eq "orchestration") {
         return @("scdata/","installers/","logs/","work/*.log","*.p4k","*.partial","setup-state.json",".setup-cache/") + $common
     }
@@ -6886,43 +7027,124 @@ function Get-GitignoreRulesForRepoRole {
     return $common
 }
 
-function Merge-GitignoreRules {
+function Get-InstallerGitExcludeMarkerStart { return "# SC-ZERO-TO-HERO-GENERATED local excludes BEGIN" }
+function Get-InstallerGitExcludeMarkerEnd { return "# SC-ZERO-TO-HERO-GENERATED local excludes END" }
+
+function Set-MarkedTextBlock {
+    param(
+        [string[]]$Existing = @(),
+        [string]$StartMarker,
+        [string]$EndMarker,
+        [string[]]$BlockLines = @()
+    )
+    $out = New-Object 'System.Collections.Generic.List[string]'
+    $inside = $false
+    foreach ($line in @($Existing)) {
+        if ([string]$line -eq $StartMarker) { $inside = $true; continue }
+        if ($inside -and [string]$line -eq $EndMarker) { $inside = $false; continue }
+        if (-not $inside) { [void]$out.Add([string]$line) }
+    }
+    while ($out.Count -gt 0 -and [string]::IsNullOrWhiteSpace([string]$out[$out.Count - 1])) { $out.RemoveAt($out.Count - 1) }
+    if ($out.Count -gt 0) { [void]$out.Add("") }
+    foreach ($line in @($BlockLines)) { [void]$out.Add([string]$line) }
+    return @($out.ToArray())
+}
+
+function Move-GeneratedGitignoreBlockToInfoExclude {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $gitignore = Join-Path $Path ".gitignore"
+    if (-not (Test-Path -LiteralPath $gitignore)) { return $false }
+    $start = Get-InstallerGitExcludeMarkerStart
+    $end = Get-InstallerGitExcludeMarkerEnd
+    try { $existing = @(Get-Content -LiteralPath $gitignore -ErrorAction Stop) } catch { return $false }
+    if (-not ($existing -contains $start)) { return $false }
+    $block = New-Object 'System.Collections.Generic.List[string]'
+    $remaining = New-Object 'System.Collections.Generic.List[string]'
+    $inside = $false
+    foreach ($line in @($existing)) {
+        if ([string]$line -eq $start) { $inside = $true; continue }
+        if ($inside -and [string]$line -eq $end) { $inside = $false; continue }
+        if ($inside) { [void]$block.Add([string]$line) } else { [void]$remaining.Add([string]$line) }
+    }
+    if ($block.Count -eq 0) { return $false }
+    Merge-GitInfoExcludeRules -Path $Path -Rules @($block.ToArray()) | Out-Null
+    if ($DryRun) { return $true }
+    Assert-HarnessPathAllowed -Path $gitignore -Purpose ".gitignore generated block migration"
+    Set-Content -LiteralPath $gitignore -Value @($remaining.ToArray()) -Encoding UTF8
+    return $true
+}
+
+function Merge-GitInfoExcludeRules {
     param(
         [Parameter(Mandatory=$true)][string]$Path,
         [string[]]$Rules = @()
     )
     if ($Rules.Count -eq 0) { return $false }
-    $gitignore = Join-Path $Path ".gitignore"
-    $existing = @()
-    if (Test-Path -LiteralPath $gitignore) {
-        try { $existing = @(Get-Content -LiteralPath $gitignore -ErrorAction Stop) } catch { $existing = @() }
-    }
+    $gitDir = Join-Path $Path ".git"
+    if (-not (Test-Path -LiteralPath $gitDir)) { return $false }
+    $infoDir = Join-Path $gitDir "info"
+    $exclude = Join-Path $infoDir "exclude"
+    $start = Get-InstallerGitExcludeMarkerStart
+    $end = Get-InstallerGitExcludeMarkerEnd
+    $deduped = New-Object 'System.Collections.Generic.List[string]'
     $seen = @{}
-    foreach ($line in @($existing)) {
-        $key = ([string]$line).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($key) -and -not $seen.ContainsKey($key)) { $seen[$key] = $true }
-    }
-    $missing = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rule in @($Rules)) {
         $key = ([string]$rule).Trim()
         if ([string]::IsNullOrWhiteSpace($key)) { continue }
         if (-not $seen.ContainsKey($key)) {
-            [void]$missing.Add($key)
+            [void]$deduped.Add($key)
             $seen[$key] = $true
         }
     }
-    if ($missing.Count -eq 0) { return $false }
+    if ($deduped.Count -eq 0) { return $false }
+    $block = @($start, "# Local/generated ignores written by the SC Zero to Hero installer.", "# These stay in .git/info/exclude so cloned upstream repos are not dirtied.", @($deduped.ToArray()), $end)
+    $existing = @()
+    if (Test-Path -LiteralPath $exclude) {
+        try { $existing = @(Get-Content -LiteralPath $exclude -ErrorAction Stop) } catch { $existing = @() }
+    }
+    $updated = @(Set-MarkedTextBlock -Existing $existing -StartMarker $start -EndMarker $end -BlockLines $block)
+    if (($existing -join "`n") -eq ($updated -join "`n")) { return $false }
     if ($DryRun) {
-        Write-Host ("[dry-run] Would append {0} .gitignore rule(s) to {1}" -f $missing.Count, $gitignore) -ForegroundColor DarkCyan
+        Write-Host ("[dry-run] Would update generated local exclude block in {0}" -f $exclude) -ForegroundColor DarkCyan
         return $false
     }
-    Assert-HarnessPathAllowed -Path $gitignore -Purpose ".gitignore merge"
-    if (Test-Path -LiteralPath $gitignore) {
-        Add-Content -LiteralPath $gitignore -Value @($missing.ToArray()) -Encoding UTF8
-    } else {
-        Set-Content -LiteralPath $gitignore -Value @($missing.ToArray()) -Encoding UTF8
-    }
+    Assert-HarnessPathAllowed -Path $exclude -Purpose ".git/info/exclude merge"
+    Ensure-Directory $infoDir
+    Set-Content -LiteralPath $exclude -Value $updated -Encoding UTF8
     return $true
+}
+
+function Write-WorkspaceControlGitignore {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    $gitignore = Join-Path $Path ".gitignore"
+    $rules = @(Get-GitignoreRulesForRepoRole -Role "workspace-control")
+    $existing = @()
+    if (Test-Path -LiteralPath $gitignore) {
+        try { $existing = @(Get-Content -LiteralPath $gitignore -ErrorAction Stop) } catch { $existing = @() }
+    }
+    if (($existing -join "`n") -eq ($rules -join "`n")) { return $false }
+    if ($DryRun) {
+        Write-Host ("[dry-run] Would write protective workspace-control .gitignore: {0}" -f $gitignore) -ForegroundColor DarkCyan
+        return $false
+    }
+    Assert-HarnessPathAllowed -Path $gitignore -Purpose "workspace-control .gitignore"
+    Set-Content -LiteralPath $gitignore -Value $rules -Encoding UTF8
+    return $true
+}
+
+function Merge-GitignoreRules {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string[]]$Rules = @(),
+        [string]$Role = "tool"
+    )
+    if ($Rules.Count -eq 0) { return $false }
+    if ($Role -eq "workspace-control") {
+        return (Write-WorkspaceControlGitignore -Path $Path)
+    }
+    [void](Move-GeneratedGitignoreBlockToInfoExclude -Path $Path)
+    [void](Merge-GitInfoExcludeRules -Path $Path -Rules $Rules)
+    return $false
 }
 
 function Test-KnownStarCitizenChildRepoPath {
@@ -7063,8 +7285,7 @@ function Sync-Repositories {
     )
     foreach ($repo in $repos) { Clone-RepositoryIfNeeded -Name $repo.Name -Url $repo.Url }
 
-    Ensure-Directory (Join-Path $StarCitizenRoot "scdatatools")
-    Ensure-Directory (Join-Path $StarCitizenRoot "qtvscodestyle")
+    Write-Host "Optional offline/private repos scdatatools and qtvscodestyle are not cloned automatically; existing local folders are validated later if present." -ForegroundColor DarkCyan
 }
 
 function Sync-GuideRepository {
@@ -7137,10 +7358,10 @@ function Ensure-GitBranch {
             $result.Reason = "Branch switching was not requested."
         }
 
-        $gitignoreChanged = Merge-GitignoreRules -Path $Path -Rules (Get-GitignoreRulesForRepoRole -Role $Role)
-        if ($gitignoreChanged -and $result.Status -eq "OK") {
+        $gitignoreChanged = Merge-GitignoreRules -Path $Path -Rules (Get-GitignoreRulesForRepoRole -Role $Role) -Role $Role
+        if ($gitignoreChanged -and $result.Status -eq "OK" -and $Role -eq "workspace-control") {
             $result.Status = "WARN"
-            $result.Reason = (($result.Reason + " Missing .gitignore rules were merged; review the uncommitted .gitignore change.").Trim())
+            $result.Reason = (($result.Reason + " Protective workspace-control .gitignore was written; review the uncommitted .gitignore change.").Trim())
         }
         if ($result.IdentityFallbackWritten -and $result.Status -eq "OK") {
             $result.Status = "WARN"
@@ -7163,6 +7384,10 @@ function Initialize-PrivateRepoIfUseful {
         [string]$InitialBranch = "dev-private-review"
     )
     if (-not (Test-Path $Path)) { return $false }
+    if (-not (Test-InstallerPathUnderRoot -Path $Path -Root $StarCitizenRoot)) {
+        Write-Warning "Optional private repo path is outside StarCitizenRoot; not initializing Git: $Path"
+        return $false
+    }
     if (Test-Path (Join-Path $Path ".git")) { return $true }
 
     $files = Get-ChildItem $Path -Force | Where-Object { $_.Name -ne ".git" } | Select-Object -First 1
@@ -7172,6 +7397,80 @@ function Initialize-PrivateRepoIfUseful {
     if (-not (Test-Path (Join-Path $Path ".git"))) { Run-Native -Exe "git" -Arguments @("init") -WorkingDirectory $Path }
     Run-Native -Exe "git" -Arguments @("remote", "-v") -IgnoreExitCode -WorkingDirectory $Path
     return (Test-Path (Join-Path $Path ".git"))
+}
+
+function Get-OptionalPrivateRepoSkipReason {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return "Optional private/offline source folder is missing; skipped without failure." }
+    try {
+        $files = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".git" } | Select-Object -First 1)
+        if ($files.Count -eq 0) { return "Optional private/offline source folder is empty; placeholder skipped without failure." }
+    } catch { return "Optional private/offline source folder could not be inspected safely; skipped." }
+    if (-not (Test-InstallerPathUnderRoot -Path $Path -Root $StarCitizenRoot)) { return "Optional private repo path is outside StarCitizenRoot; skipped for safety." }
+    return "Optional private/offline repo was not initialized; review local files manually."
+}
+
+function Initialize-WorkspaceControlGitRepo {
+    $path = $StarCitizenRoot
+    $branch = "dev-setup-stabilization"
+    $result = New-GitVersioningResult -Repo "starcitizen-workspace-control" -Role "workspace-control" -Path $path -Branch $branch
+    try {
+        Ensure-Directory $path
+        if (-not (Test-Path -LiteralPath (Join-Path $path ".git"))) {
+            Write-Host "Initializing workspace-control Git repo: $path" -ForegroundColor Cyan
+            Run-Native -Exe "git" -Arguments @("init", "-b", $branch) -IgnoreExitCode -WorkingDirectory $path
+            if (-not (Test-Path -LiteralPath (Join-Path $path ".git"))) {
+                Run-Native -Exe "git" -Arguments @("init") -WorkingDirectory $path
+            }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $path ".git"))) {
+            $result.Status = "FAILED"
+            $result.Reason = "Workspace-control Git repo could not be initialized."
+            return
+        }
+        $result.GitExists = $true
+        Set-RepoLocalGitIdentity -Path $path -Result $result
+        $gitignoreChanged = Write-WorkspaceControlGitignore -Path $path
+        $result.CurrentBranch = Get-GitCurrentBranchSafe -Path $path
+        $status = @(Get-GitStatusLines -Path $path)
+        $result.Dirty = -not [string]::IsNullOrWhiteSpace(($status -join ""))
+        $result.DirtyStatus = if ($result.Dirty) { (($status | Select-Object -First 8) -join " | ") } else { "Clean" }
+
+        if ($CreateBranches -and $result.CurrentBranch -ne $branch) {
+            if ($result.Dirty) {
+                $result.Status = "WARN"
+                $result.Reason = "Workspace-control repo has local changes; branch not switched."
+            } else {
+                $existing = ((& git -C $path branch --list $branch 2>$null) -join "").Trim()
+                if (-not [string]::IsNullOrWhiteSpace($existing)) {
+                    Run-Native -Exe "git" -Arguments @("-C", $path, "checkout", $branch) -WorkingDirectory $path
+                } else {
+                    Run-Native -Exe "git" -Arguments @("-C", $path, "checkout", "-b", $branch) -WorkingDirectory $path
+                }
+                $result.CurrentBranch = Get-GitCurrentBranchSafe -Path $path
+            }
+        }
+
+        $remoteText = ((& git -C $path remote -v 2>$null) -join "`n").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($remoteText)) {
+            $result.Status = "WARN"
+            $result.Reason = (($result.Reason + " Workspace-control repo has a remote; installer will not mutate it.").Trim())
+        }
+        if ($result.Status -eq "Pending") {
+            $result.Status = if ($gitignoreChanged -or $result.IdentityFallbackWritten -or $result.Dirty) { "WARN" } else { "OK" }
+            if ($gitignoreChanged) { $result.Reason = (($result.Reason + " Protective workspace-control .gitignore was written.").Trim()) }
+            if ($result.IdentityFallbackWritten) { $result.Reason = (($result.Reason + " Repo-local fallback Git identity was written.").Trim()) }
+            if ($result.Dirty) { $result.Reason = (($result.Reason + " Workspace-control files are uncommitted for review.").Trim()) }
+            if ([string]::IsNullOrWhiteSpace($result.Reason)) { $result.Reason = "Workspace-control repo is ready." }
+        }
+    } catch {
+        $result.Status = "FAILED"
+        $result.Reason = $_.Exception.Message
+        Write-Warning ("Workspace-control Git setup failed: {0}" -f $_.Exception.Message)
+    } finally {
+        $Script:BranchStates.Add([pscustomobject]$result) | Out-Null
+        $Script:OrchestrationRepoPath = $path
+    }
 }
 
 function Create-SafeBranches {
@@ -7188,18 +7487,18 @@ function Create-SafeBranches {
     } else {
         $Script:BranchStates.Add([pscustomobject](New-GitVersioningResult -Repo "scdatatools" -Role "private" -Path $scdataToolsPath -Branch "dev-private-review")) | Out-Null
         $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED"
-        $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = "Private placeholder folder is empty or missing; no Git repo initialized."
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = Get-OptionalPrivateRepoSkipReason -Path $scdataToolsPath
     }
     if (Initialize-PrivateRepoIfUseful -Path $qtStylePath -InitialBranch "dev-private-review") {
         Ensure-GitBranch -RepoName "qtvscodestyle" -Path $qtStylePath -Branch "dev-private-review" -Role "private" -SwitchBranch:$CreateBranches
     } else {
         $Script:BranchStates.Add([pscustomobject](New-GitVersioningResult -Repo "qtvscodestyle" -Role "private" -Path $qtStylePath -Branch "dev-private-review")) | Out-Null
         $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED"
-        $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = "Private placeholder folder is empty or missing; no Git repo initialized."
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = Get-OptionalPrivateRepoSkipReason -Path $qtStylePath
     }
     $guidePath = if (-not [string]::IsNullOrWhiteSpace($Script:TutorialRepoState.path)) { $Script:TutorialRepoState.path } else { $GuideRepoPath }
     Ensure-GitBranch -RepoName $GuideRepoName -Path $guidePath -Branch "dev-guide-improvements" -Role "guide" -SwitchBranch:$CreateBranches
-    if (-not [string]::IsNullOrWhiteSpace($Script:OrchestrationRepoPath)) {
+    if (-not [string]::IsNullOrWhiteSpace($Script:OrchestrationRepoPath) -and (-not (Test-SamePath -Left $Script:OrchestrationRepoPath -Right $StarCitizenRoot))) {
         Ensure-GitBranch -RepoName "starcitizen-orchestration" -Path $Script:OrchestrationRepoPath -Branch "dev-setup-stabilization" -Role "orchestration" -SwitchBranch:$CreateBranches
     }
 }
@@ -7213,15 +7512,11 @@ function Initialize-GitVersioning {
     if ([string]::IsNullOrWhiteSpace($guidePath)) { $guidePath = $GuideRepoPath }
     $Script:TutorialRepoState.path = $guidePath
 
+    Initialize-WorkspaceControlGitRepo
+
     $orchestrationPath = Resolve-SafeOrchestrationRepoPath
-    if (-not [string]::IsNullOrWhiteSpace($orchestrationPath) -and (-not (Test-SamePath -Left $orchestrationPath -Right $guidePath))) {
+    if (-not [string]::IsNullOrWhiteSpace($orchestrationPath) -and (-not (Test-SamePath -Left $orchestrationPath -Right $guidePath)) -and (-not (Test-SamePath -Left $orchestrationPath -Right $StarCitizenRoot))) {
         $Script:OrchestrationRepoPath = $orchestrationPath
-    } elseif (Test-StarCitizenRootUnsafeForAutoGitInit) {
-        $rootResult = New-GitVersioningResult -Repo "starcitizen-orchestration" -Role "orchestration" -Path $StarCitizenRoot -Branch "dev-setup-stabilization"
-        $rootResult.Status = "WARN"
-        $rootResult.Reason = "Project root contains child repos or generated/local data; skipped broad Git init."
-        $Script:BranchStates.Add([pscustomobject]$rootResult) | Out-Null
-        Write-Warning $rootResult.Reason
     }
 
     Create-SafeBranches
@@ -7987,17 +8282,203 @@ function Find-AuroraExportSceneJson {
     return ""
 }
 
+function Get-AuroraMeshAssetSummary {
+    param([string]$SceneJson)
+    $summary = [ordered]@{ meshAssetReferenceCount = 0; existingMeshAssetCount = 0; suspiciousZstdBlendCount = 0; errors = @() }
+    if ([string]::IsNullOrWhiteSpace($SceneJson) -or -not (Test-Path -LiteralPath $SceneJson)) { return [pscustomobject]$summary }
+    $root = Split-Path $SceneJson -Parent
+    $refs = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        $json = Get-Content -LiteralPath $SceneJson -Raw -ErrorAction Stop | ConvertFrom-Json
+        $stack = New-Object 'System.Collections.Generic.Stack[object]'
+        $stack.Push($json)
+        while ($stack.Count -gt 0) {
+            $item = $stack.Pop()
+            if ($null -eq $item) { continue }
+            if ($item -is [System.Collections.IDictionary]) {
+                foreach ($key in $item.Keys) {
+                    if ([string]$key -eq "mesh_asset" -and -not [string]::IsNullOrWhiteSpace([string]$item[$key])) { [void]$refs.Add([string]$item[$key]) }
+                    $stack.Push($item[$key])
+                }
+            } elseif ($item -is [System.Collections.IEnumerable] -and -not ($item -is [string])) {
+                foreach ($child in $item) { $stack.Push($child) }
+            } else {
+                $props = @($item.PSObject.Properties)
+                foreach ($prop in $props) {
+                    if ([string]$prop.Name -eq "mesh_asset" -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) { [void]$refs.Add([string]$prop.Value) }
+                    $stack.Push($prop.Value)
+                }
+            }
+        }
+    } catch {
+        $summary.errors = @("Could not inspect scene mesh_asset references: $($_.Exception.Message)")
+        return [pscustomobject]$summary
+    }
+    $summary.meshAssetReferenceCount = $refs.Count
+    foreach ($ref in @($refs.ToArray() | Select-Object -Unique)) {
+        $candidate = if ([IO.Path]::IsPathRooted($ref)) { $ref } else { Join-Path $root $ref }
+        if (Test-Path -LiteralPath $candidate) {
+            $summary.existingMeshAssetCount = [int]$summary.existingMeshAssetCount + 1
+            try {
+                $bytes = [byte[]](Get-Content -LiteralPath $candidate -Encoding Byte -TotalCount 4 -ErrorAction Stop)
+                if ($bytes.Length -eq 4 -and $bytes[0] -eq 0x28 -and $bytes[1] -eq 0xB5 -and $bytes[2] -eq 0x2F -and $bytes[3] -eq 0xFD -and $candidate -match '(?i)\.blend$') {
+                    $summary.suspiciousZstdBlendCount = [int]$summary.suspiciousZstdBlendCount + 1
+                }
+            } catch { }
+        }
+    }
+    return [pscustomobject]$summary
+}
+
+function Test-AuroraImportCatastrophicText {
+    param([string[]]$Lines = @())
+    $text = (@($Lines) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return ($text -match '(?i)Bad glTF|json error:\s*utf-8|starbreaker_missing_asset|no mesh objects found|no usable mesh objects|no nonzero used meshes')
+}
+
+function New-AuroraImportAuditResult {
+    param(
+        [string]$SceneJson = "",
+        [string]$PackageRoot = "",
+        [int]$ObjectCount = 0,
+        [int]$MeshObjectCount = 0,
+        [int]$NonzeroUsedMeshDatablockCount = 0,
+        [int]$CollectionInstanceCount = 0,
+        [int]$ActionCount = 0,
+        [int]$LinkedLibraryCount = 0,
+        [int]$MissingAssetCount = 0,
+        [int]$MeshAssetReferenceCount = 0,
+        [int]$ExistingMeshAssetCount = 0,
+        [int]$SuspiciousZstdBlendCount = 0,
+        [string[]]$Errors = @()
+    )
+    $hasPackageRoot = -not [string]::IsNullOrWhiteSpace($PackageRoot)
+    $hasUsableGeometry = (($MeshObjectCount -gt 0) -or ($NonzeroUsedMeshDatablockCount -gt 0) -or ($CollectionInstanceCount -gt 0 -and $LinkedLibraryCount -gt 0))
+    $catastrophicText = Test-AuroraImportCatastrophicText -Lines $Errors
+    $status = "OK"
+    $reason = "Blender import produced usable geometry."
+    if (-not (Test-Path -LiteralPath $SceneJson)) {
+        $status = "FAILED"; $reason = "Aurora scene.json was missing after export."
+    } elseif (-not $hasPackageRoot) {
+        $status = "FAILED"; $reason = "Blender import did not return or find a StarBreaker package root."
+    } elseif (-not $hasUsableGeometry) {
+        $status = "FAILED"; $reason = "Blender import returned a package root but no usable mesh objects were imported. Mesh files may be compressed or incompatible with the add-on import path."
+    } elseif ($catastrophicText) {
+        $status = "FAILED"; $reason = "Blender import log contains catastrophic import errors."
+    } elseif (($ExistingMeshAssetCount -gt 0) -and ($MissingAssetCount -ge $ExistingMeshAssetCount) -and ($MissingAssetCount -gt 5)) {
+        $status = "FAILED"; $reason = "Blender import created broad missing-asset placeholders for mesh assets that exist on disk."
+    } elseif ($SuspiciousZstdBlendCount -gt 0) {
+        $status = "FAILED"; $reason = "Exported mesh assets use .blend names but contain Zstandard-compressed bytes."
+    } elseif ($MissingAssetCount -gt 0) {
+        $status = "WARN"; $reason = "Blender import produced geometry but some StarBreaker assets were marked missing."
+    }
+    return [pscustomobject]@{
+        Status = $status; Reason = $reason; SceneJson = $SceneJson; PackageRoot = $PackageRoot
+        ObjectCount = $ObjectCount; MeshObjectCount = $MeshObjectCount; NonzeroUsedMeshDatablockCount = $NonzeroUsedMeshDatablockCount
+        CollectionInstanceCount = $CollectionInstanceCount; ActionCount = $ActionCount; LinkedLibraryCount = $LinkedLibraryCount
+        MissingAssetCount = $MissingAssetCount; MeshAssetReferenceCount = $MeshAssetReferenceCount; ExistingMeshAssetCount = $ExistingMeshAssetCount
+        SuspiciousZstdBlendCount = $SuspiciousZstdBlendCount; Errors = @($Errors)
+    }
+}
+
+function Set-AuroraImportStateFromAudit {
+    param([object]$Audit, [string]$HelperLog = "", [string]$StdoutLog = "", [string]$StderrLog = "")
+    $Script:AuroraImportState.status = [string]$Audit.Status
+    $Script:AuroraImportState.reason = [string]$Audit.Reason
+    $Script:AuroraImportState.sceneJson = [string]$Audit.SceneJson
+    $Script:AuroraImportState.packageRoot = [string]$Audit.PackageRoot
+    $Script:AuroraImportState.helperLog = $HelperLog
+    $Script:AuroraImportState.stdoutLog = $StdoutLog
+    $Script:AuroraImportState.stderrLog = $StderrLog
+    $Script:AuroraImportState.objectCount = [int]$Audit.ObjectCount
+    $Script:AuroraImportState.meshObjectCount = [int]$Audit.MeshObjectCount
+    $Script:AuroraImportState.nonzeroUsedMeshDatablockCount = [int]$Audit.NonzeroUsedMeshDatablockCount
+    $Script:AuroraImportState.collectionInstanceCount = [int]$Audit.CollectionInstanceCount
+    $Script:AuroraImportState.actionCount = [int]$Audit.ActionCount
+    $Script:AuroraImportState.linkedLibraryCount = [int]$Audit.LinkedLibraryCount
+    $Script:AuroraImportState.missingAssetCount = [int]$Audit.MissingAssetCount
+    $Script:AuroraImportState.meshAssetReferenceCount = [int]$Audit.MeshAssetReferenceCount
+    $Script:AuroraImportState.existingMeshAssetCount = [int]$Audit.ExistingMeshAssetCount
+    $Script:AuroraImportState.suspiciousZstdBlendCount = [int]$Audit.SuspiciousZstdBlendCount
+    $Script:AuroraImportState.errors = @($Audit.Errors)
+}
+
+function Get-AuroraLogMarkerValue {
+    param([string[]]$Lines = @(), [string]$Name)
+    $pattern = '^SC_AURORA_' + [regex]::Escape($Name) + '=(.*)$'
+    foreach ($line in @($Lines)) {
+        if ([string]$line -match $pattern) { return [string]$matches[1] }
+    }
+    return ""
+}
+
+function ConvertTo-AuroraLogInt {
+    param([string]$Value)
+    try { return [int]$Value } catch { return 0 }
+}
+
+function Get-AuroraImportAuditFromLogs {
+    param(
+        [string]$SceneJson,
+        [string]$HelperLog,
+        [string]$StdoutLog = "",
+        [string]$StderrLog = ""
+    )
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($path in @($HelperLog, $StdoutLog, $StderrLog)) {
+        if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            foreach ($line in @(Get-Content -LiteralPath $path -ErrorAction Stop)) { [void]$lines.Add([string]$line) }
+        } catch { }
+    }
+    $errors = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in @($lines.ToArray())) {
+        if ([string]$line -match '(?i)Bad glTF|json error:\s*utf-8|starbreaker_missing_asset|no mesh objects found|no usable mesh objects|no nonzero used meshes|Traceback|ERROR|failed') {
+            [void]$errors.Add([string]$line)
+        }
+    }
+    $sceneSummary = Get-AuroraMeshAssetSummary -SceneJson $SceneJson
+    foreach ($e in @($sceneSummary.errors)) { if (-not [string]::IsNullOrWhiteSpace([string]$e)) { [void]$errors.Add([string]$e) } }
+    $audit = New-AuroraImportAuditResult `
+        -SceneJson $SceneJson `
+        -PackageRoot (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "PACKAGE_ROOT") `
+        -ObjectCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "OBJECT_COUNT")) `
+        -MeshObjectCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MESH_OBJECT_COUNT")) `
+        -NonzeroUsedMeshDatablockCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "NONZERO_USED_MESH_DATABLOCK_COUNT")) `
+        -CollectionInstanceCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "COLLECTION_INSTANCE_COUNT")) `
+        -ActionCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "ACTION_COUNT")) `
+        -LinkedLibraryCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "LINKED_LIBRARY_COUNT")) `
+        -MissingAssetCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MISSING_ASSET_COUNT")) `
+        -MeshAssetReferenceCount ([int]$sceneSummary.meshAssetReferenceCount) `
+        -ExistingMeshAssetCount ([int]$sceneSummary.existingMeshAssetCount) `
+        -SuspiciousZstdBlendCount ([int]$sceneSummary.suspiciousZstdBlendCount) `
+        -Errors @($errors.ToArray() | Select-Object -First 40)
+    $explicitVerdict = Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "VERDICT"
+    $explicitReason = Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "REASON"
+    if (([string]$explicitVerdict -match '^(OK|WARN|FAILED)$') -and [string]$audit.Status -eq "OK") {
+        $audit.Status = [string]$explicitVerdict
+        if (-not [string]::IsNullOrWhiteSpace($explicitReason)) { $audit.Reason = [string]$explicitReason }
+    }
+    return $audit
+}
+
 function Open-AuroraExportInBlender {
     param(
         [Parameter(Mandatory=$true)][string]$SceneJson,
         [Parameter(Mandatory=$true)][string]$ExportDir
     )
     if ($NoOpenBlenderAfterExport) {
+        $Script:AuroraImportState.status = "SKIPPED"
+        $Script:AuroraImportState.reason = "Blender open skipped because NoOpenBlenderAfterExport was set."
         Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because NoOpenBlenderAfterExport was set."
         return
     }
     if ([string]::IsNullOrWhiteSpace($SceneJson) -or -not (Test-Path -LiteralPath $SceneJson)) {
         Write-Warning "Could not find Aurora scene.json to open in Blender. Expected under: $ExportDir"
+        $Script:AuroraImportState.status = "SKIPPED"
+        $Script:AuroraImportState.reason = "Blender open skipped because Aurora scene.json was not found."
+        $Script:AuroraImportState.sceneJson = [string]$SceneJson
         Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because Aurora scene.json was not found."
         return
     }
@@ -8005,6 +8486,9 @@ function Open-AuroraExportInBlender {
     if ([string]::IsNullOrWhiteSpace($blenderExe) -or -not (Test-Path -LiteralPath $blenderExe)) {
         Write-Host "Aurora export succeeded. Open this scene manually in Blender with the StarBreaker add-on:" -ForegroundColor Cyan
         Write-Host "  $SceneJson" -ForegroundColor Yellow
+        $Script:AuroraImportState.status = "SKIPPED"
+        $Script:AuroraImportState.reason = "Blender open skipped because Blender executable was not selected."
+        $Script:AuroraImportState.sceneJson = [string]$SceneJson
         Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because Blender executable was not selected."
         return
     }
@@ -8012,6 +8496,8 @@ function Open-AuroraExportInBlender {
     Ensure-Directory $ScWorkRoot
     $pyPath = Join-Path $ScWorkRoot "open_aurora_mr_in_blender.py"
     $logPath = Join-Path $ScWorkRoot "open_aurora_mr_in_blender.log"
+    $stdoutPath = Join-Path $ScWorkRoot "open_aurora_mr_in_blender.stdout.log"
+    $stderrPath = Join-Path $ScWorkRoot "open_aurora_mr_in_blender.stderr.log"
 
     # v24 rewrite of the Blender import helper.
     #
@@ -8345,6 +8831,91 @@ def imported_objects(root):
     return unique
 
 
+def collect_import_audit(root):
+    objs = list(bpy.data.objects)
+    imported = imported_objects(root)
+    missing_count = 0
+    mesh_count = 0
+    used_mesh_count = 0
+    collection_instance_count = 0
+    linked_library_count = 0
+    try:
+        linked_library_count = len([lib for lib in bpy.data.libraries if lib is not None])
+    except Exception:
+        linked_library_count = 0
+    for obj in objs:
+        try:
+            if obj.type == 'MESH':
+                mesh_count += 1
+        except Exception:
+            pass
+        try:
+            data = getattr(obj, 'data', None)
+            if data is not None and getattr(data, 'users', 0) > 0 and getattr(obj, 'type', '') == 'MESH':
+                used_mesh_count += 1
+        except Exception:
+            pass
+        try:
+            if getattr(obj, 'instance_type', '') == 'COLLECTION' and getattr(obj, 'instance_collection', None) is not None:
+                collection_instance_count += 1
+        except Exception:
+            pass
+        try:
+            if obj.get('starbreaker_missing_asset'):
+                missing_count += 1
+        except Exception:
+            pass
+    try:
+        action_count = len(bpy.data.actions)
+    except Exception:
+        action_count = 0
+    return {
+        'object_count': len(objs),
+        'imported_object_count': len(imported),
+        'mesh_object_count': mesh_count,
+        'nonzero_used_mesh_datablock_count': used_mesh_count,
+        'collection_instance_count': collection_instance_count,
+        'action_count': action_count,
+        'linked_library_count': linked_library_count,
+        'missing_asset_count': missing_count,
+    }
+
+
+def emit_import_verdict(root):
+    global import_succeeded
+    audit = collect_import_audit(root)
+    package_root_name = getattr(root, 'name', '') if root is not None else ''
+    has_geometry = (
+        audit.get('mesh_object_count', 0) > 0
+        or audit.get('nonzero_used_mesh_datablock_count', 0) > 0
+        or (audit.get('collection_instance_count', 0) > 0 and audit.get('linked_library_count', 0) > 0)
+    )
+    verdict = 'OK'
+    reason = 'Blender import produced usable geometry.'
+    if not scene_exists:
+        verdict = 'FAILED'
+        reason = 'Aurora scene.json was missing after export.'
+    elif not package_root_name:
+        verdict = 'FAILED'
+        reason = 'Blender import did not return or find a StarBreaker package root.'
+    elif not has_geometry:
+        verdict = 'FAILED'
+        reason = 'Blender import returned a package root but no usable mesh objects were imported.'
+    elif audit.get('missing_asset_count', 0) > 0:
+        verdict = 'WARN'
+        reason = 'Blender import produced geometry but some StarBreaker assets were marked missing.'
+
+    if verdict != 'OK':
+        import_succeeded = False
+
+    log('SC_AURORA_VERDICT=' + verdict)
+    log('SC_AURORA_REASON=' + reason)
+    log('SC_AURORA_PACKAGE_ROOT=' + package_root_name)
+    for key in sorted(audit.keys()):
+        log('SC_AURORA_' + key.upper() + '=' + str(audit[key]))
+    return verdict, reason, audit
+
+
 def force_visible(objs):
     for obj in objs:
         try:
@@ -8587,6 +9158,7 @@ def deferred_finalize(label):
 
 # Immediate finish pass.
 root = finalize_view('immediate') if import_succeeded else find_package_root_object()
+emit_import_verdict(root)
 create_status_text(root)
 switch_workspace('Layout' if import_succeeded else 'Scripting')
 
@@ -8605,19 +9177,51 @@ log('Helper finished. import_succeeded={0} method={1}'.format(import_succeeded, 
     [IO.File]::WriteAllText($pyPath, $py, $utf8)
     # Truncate prior helper log so the user only sees this run's output.
     try { if (Test-Path -LiteralPath $logPath) { Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue } } catch { }
+    try { if (Test-Path -LiteralPath $stdoutPath) { Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue } } catch { }
+    try { if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue } } catch { }
 
-    Write-Host "Opening Blender with Aurora MR import helper..." -ForegroundColor Cyan
+    Write-Host "Validating Aurora MR import in Blender before marking the example successful..." -ForegroundColor Cyan
     Write-Host "Scene: $SceneJson" -ForegroundColor Yellow
     Write-Host "Helper log: $logPath" -ForegroundColor DarkGray
+    Write-Host "Blender stdout: $stdoutPath" -ForegroundColor DarkGray
+    Write-Host "Blender stderr: $stderrPath" -ForegroundColor DarkGray
     Write-Host "If auto-import does not happen, follow the instructions in Blender's Text Editor (Scripting workspace)." -ForegroundColor DarkYellow
     try {
         # Pass the paths to the Python helper via environment variables so we
         # don't have to escape them through a PowerShell -> Python string.
         $env:SC_AURORA_SCENE_JSON = $SceneJson
         $env:SC_AURORA_HELPER_LOG = $logPath
-        Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @("--python", $pyPath)
+        Assert-InstallerExternalCommandAllowed -Exe $blenderExe -Arguments @("--background", "--python", $pyPath)
+        $proc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", "--python", $pyPath) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru -WindowStyle Hidden
+        $audit = Get-AuroraImportAuditFromLogs -SceneJson $SceneJson -HelperLog $logPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $logPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        Write-Host ("Aurora Blender validation verdict: {0}" -f [string]$audit.Status) -ForegroundColor $(if ([string]$audit.Status -eq "OK") { "Green" } elseif ([string]$audit.Status -eq "WARN") { "Yellow" } else { "Red" })
+        Write-Host ("Reason: {0}" -f [string]$audit.Reason) -ForegroundColor DarkYellow
+        Write-Host ("Objects={0}, MeshObjects={1}, UsedMeshData={2}, MissingAssets={3}" -f [int]$audit.ObjectCount, [int]$audit.MeshObjectCount, [int]$audit.NonzeroUsedMeshDatablockCount, [int]$audit.MissingAssetCount) -ForegroundColor DarkCyan
+        if ([int]$proc.ExitCode -ne 0 -and [string]$audit.Status -eq "OK") {
+            $audit.Status = "FAILED"
+            $audit.Reason = "Blender validation helper exited with code $($proc.ExitCode)."
+            Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $logPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        }
+        if ([string]$audit.Status -eq "FAILED") {
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = [string]$audit.Reason
+            return
+        }
+        if ([string]$audit.Status -eq "WARN") {
+            $Script:CurrentStepResultStatus = "WARN"
+            $Script:CurrentStepResultReason = [string]$audit.Reason
+        }
+        if (-not $Script:NoGui -and -not (Test-NonLiveInstallerMode)) {
+            Write-Host "Opening Blender with Aurora MR import helper for visual review..." -ForegroundColor Cyan
+            Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @("--python", $pyPath)
+        }
     } catch {
         Write-Warning "Could not launch Blender automatically: $($_.Exception.Message)"
+        $audit = New-AuroraImportAuditResult -SceneJson $SceneJson -Errors @($_.Exception.Message)
+        Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $logPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        $Script:CurrentStepResultStatus = "FAILED"
+        $Script:CurrentStepResultReason = [string]$audit.Reason
         Write-Host "Open Blender manually and import:" -ForegroundColor Cyan
         Write-Host "  $SceneJson" -ForegroundColor Yellow
     }
@@ -8760,6 +9364,20 @@ function Show-SetupOutcomeSummary {
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AgentGuidanceState.claudeFallbackPath)) { Write-Host ("    CLAUDE fallback: " + [string]$Script:AgentGuidanceState.claudeFallbackPath) -ForegroundColor DarkYellow }
         Write-Host ("    Launcher: {0} ({1})" -f [string]$Script:AgentGuidanceState.launcherStatus, [string]$Script:AgentGuidanceState.launcherPath) -ForegroundColor DarkCyan
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AgentGuidanceState.reason)) { Write-Host ("    Reason: " + [string]$Script:AgentGuidanceState.reason) -ForegroundColor DarkYellow }
+    }
+
+    if ([string]$Script:AuroraImportState.status -ne "NotStarted") {
+        $auroraColor = switch ([string]$Script:AuroraImportState.status) {
+            "OK" { "Green" }
+            "WARN" { "Yellow" }
+            "SKIPPED" { "DarkYellow" }
+            default { "Red" }
+        }
+        Write-Host "AURORA / BLENDER IMPORT STATUS:" -ForegroundColor Cyan
+        Write-Host ("  - Verdict: {0}" -f [string]$Script:AuroraImportState.status) -ForegroundColor $auroraColor
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.reason)) { Write-Host ("    Reason: " + [string]$Script:AuroraImportState.reason) -ForegroundColor DarkYellow }
+        Write-Host ("    Objects={0}, MeshObjects={1}, UsedMeshData={2}, MissingAssets={3}" -f [int]$Script:AuroraImportState.objectCount, [int]$Script:AuroraImportState.meshObjectCount, [int]$Script:AuroraImportState.nonzeroUsedMeshDatablockCount, [int]$Script:AuroraImportState.missingAssetCount) -ForegroundColor DarkCyan
+        if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.helperLog)) { Write-Host ("    Helper log: " + [string]$Script:AuroraImportState.helperLog) -ForegroundColor DarkGray }
     }
 
     if ($failureCount -gt 0 -or $skipCount -gt 0 -or $warningCount -gt 0) {
@@ -9856,6 +10474,50 @@ function Invoke-SelfTest {
     } catch { Add-SelfTestError "Workspace generation self-test failed: $($_.Exception.Message)" }
 
     try {
+        Assert-SelfTest ([string]$Script:ScriptVersion -eq "v0.41") "Script version was not v0.41."
+        $auroraTestRoot = Join-Path $Script:HarnessRoot "aurora-audit-tests"
+        New-InstallerDirectory -Path $auroraTestRoot
+        $fakeScene = Join-Path $auroraTestRoot "scene.json"
+        Write-InstallerFile -Path $fakeScene -Text '{"objects":[]}'
+        $zeroMesh = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 129 -MeshObjectCount 0 -NonzeroUsedMeshDatablockCount 0 -CollectionInstanceCount 0 -ActionCount 0 -LinkedLibraryCount 0 -MissingAssetCount 120 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120
+        Assert-SelfTest ([string]$zeroMesh.Status -eq "FAILED") "Package-root-only Aurora import was not rejected."
+        Assert-SelfTest ([string]$zeroMesh.Reason -match "no usable mesh objects") "Zero-mesh Aurora rejection reason was unclear."
+        $badGltf = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 10 -MeshObjectCount 2 -NonzeroUsedMeshDatablockCount 2 -Errors @("Error: Bad glTF: json error: utf-8")
+        Assert-SelfTest ([string]$badGltf.Status -eq "FAILED") "Bad glTF/utf-8 Aurora import was not rejected."
+        $missingBroad = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 140 -MeshObjectCount 2 -NonzeroUsedMeshDatablockCount 2 -MissingAssetCount 80 -MeshAssetReferenceCount 80 -ExistingMeshAssetCount 80
+        Assert-SelfTest ([string]$missingBroad.Status -eq "FAILED") "Broad starbreaker_missing_asset placeholder state was not rejected."
+        Set-AuroraImportStateFromAudit -Audit $zeroMesh -HelperLog (Join-Path $auroraTestRoot "helper.log")
+        Assert-SelfTest (-not (Test-StepCacheMarkerAllowed -StepId "aurora-example")) "aurora-example cache marker was allowed for failed/weak import."
+
+        $excludeRepo = Join-Path $Script:HarnessRoot "git-exclude-test"
+        New-InstallerDirectory -Path (Join-Path $excludeRepo ".git\info")
+        $trackedIgnore = Join-Path $excludeRepo ".gitignore"
+        Write-InstallerFile -Path $trackedIgnore -Text "user-rule/`r`n"
+        [void](Merge-GitignoreRules -Path $excludeRepo -Rules @("target/","*.log") -Role "tool")
+        $excludeText = Get-Content -LiteralPath (Join-Path $excludeRepo ".git\info\exclude") -Raw
+        $gitignoreText = Get-Content -LiteralPath $trackedIgnore -Raw
+        Assert-SelfTest ($excludeText -match "SC-ZERO-TO-HERO-GENERATED local excludes BEGIN") "Generated local ignore rules were not written to .git/info/exclude."
+        Assert-SelfTest ($gitignoreText -eq "user-rule/`r`n") "Tracked upstream .gitignore was modified by generated ignore rules."
+        $workspaceRules = @(Get-GitignoreRulesForRepoRole -Role "workspace-control")
+        Assert-SelfTest ($workspaceRules -contains "*") "Workspace-control .gitignore does not ignore everything by default."
+        Assert-SelfTest ($workspaceRules -contains "!_workspace/*.code-workspace") "Workspace-control .gitignore does not allow workspace JSON."
+        Initialize-WorkspaceControlGitRepo
+        $workspaceState = @($Script:BranchStates | Where-Object { [string]$_.Repo -eq "starcitizen-workspace-control" } | Select-Object -Last 1)
+        Assert-SelfTest ($workspaceState.Count -eq 1) "Workspace-control Git state was not recorded."
+        Assert-SelfTest ([bool]$workspaceState[0].GitExists) "Workspace-control Git repo was not initialized in harness."
+        Assert-SelfTest ([string]$workspaceState[0].Branch -eq "dev-setup-stabilization") "Workspace-control branch target was wrong."
+        $workspaceGitignoreText = Get-Content -LiteralPath (Join-Path $StarCitizenRoot ".gitignore") -Raw
+        Assert-SelfTest ($workspaceGitignoreText -match "\*") "Workspace-control protective .gitignore was not written."
+        Assert-SelfTest ((Get-OptionalPrivateRepoSkipReason -Path (Join-Path $Script:HarnessRoot "missing-scdatatools")) -match "missing") "Missing optional private repo reason was not optional/missing."
+        $emptyPrivate = Join-Path $Script:HarnessRoot "empty-qtvscodestyle"
+        New-InstallerDirectory -Path $emptyPrivate
+        Assert-SelfTest ((Get-OptionalPrivateRepoSkipReason -Path $emptyPrivate) -match "empty") "Empty optional private repo reason was not optional/empty."
+        $dubious = Test-GitDubiousOwnershipOutput -OutputLines @("fatal: detected dubious ownership in repository at 'C:/dev/starcitizen/StarBreaker'", "git config --global --add safe.directory C:/dev/starcitizen/StarBreaker")
+        Assert-SelfTest ([bool]$dubious.Blocked) "Dubious ownership output was not classified."
+        Assert-SelfTest ((Get-ProgressTransitionHoldMilliseconds) -eq 0) "Progress transition hold was not disabled/minimized in self-test."
+    } catch { Add-SelfTestError "v0.41 Aurora/Git/rerun stabilization self-test failed: $($_.Exception.Message)" }
+
+    try {
         Save-SetupState
         Assert-SelfTest (Test-Path -LiteralPath $Script:SetupStatePath) "Harness setup-state file was not written."
         Assert-SelfTest (Test-InstallerPathUnderRoot -Path $Script:SetupStatePath -Root $Script:HarnessRoot) "Harness setup-state path escaped HarnessRoot."
@@ -10311,6 +10973,7 @@ if ($Script:PlanOnly) {
 }
 if (-not $Script:VisualPreviewMode) {
     Show-SetupPlan
+    Show-RerunDiagnostics
 }
 
 $mainFailed = $false
