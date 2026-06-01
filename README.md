@@ -13,10 +13,10 @@ This guide is aimed at power users, modders, artists, and technically curious ba
 The goal of this repo is to maintain an all-in-one workflow that brings together community projects like StarBreaker, Blender, CryEngine conversion tools, texture tools, `Data.p4k` organization, VS Code, and AI-assisted development into one practical pipeline that anyone with patience can use.
 
 > [!NOTE]
-> This guide was refreshed on 05/09/2026. Star Citizen is an active alpha, and community tools may break or change as CIG updates the game data format. Treat this guide as a living document.
+> This guide is maintained as a living document. Star Citizen is an active alpha, and community tools may break or change as CIG updates the game data format.
 
 > [!IMPORTANT]
-> This guide is intended for personal learning, fan art, research, and community tooling. Treat your local `Data.p4k` files as read-only, do not redistribute extracted game assets, and respect CIG’s terms and community rules.
+> This guide is intended for personal learning, fan art, research, and community tooling. Treat your local `Data.p4k` files as read-only, do not redistribute extracted game assets, and respect CIG's terms and community rules.
 
 > [!WARNING]
 >
@@ -45,7 +45,7 @@ The goal of this repo is to maintain an all-in-one workflow that brings together
 > 4. Set **Smart App Control** to **Off**.
 > 5. Run the installer again.
 >
-> The installer does **not** disable Smart App Control for you. This is a Windows security setting that must be changed by the user.
+> The installer does **not** disable Smart App Control for you. Running as Administrator does not bypass Smart App Control. This is a Windows security setting that must be changed by the user.
 >
 > If you keep Smart App Control On or in Evaluation mode, Windows may block Git, Rust, or other developer tools and the setup cannot reliably continue.
 
@@ -95,7 +95,7 @@ The installer asks where to create the dev environment. Common choices are:
 - `C:\dev`
 - a custom path you choose
 
-It creates the folder layout, validates or installs tools, clones the community repos, creates the VS Code workspace, sets up safe Git branches, generates support files, and writes logs/setup-state for troubleshooting.
+It creates the folder layout, validates or installs tools, clones the community repos, creates the VS Code workspace, sets up safe Git branches, generates support files, links or validates the StarBreaker Blender add-on, handles `Data.p4k` selection, and can generate/open the Aurora Blender scene.
 
 The installer is designed to be rerunnable. If it stops, crashes, repairs WinGet/App Installer, asks you to relaunch, or you skip a step, run the same CMD again. Completed steps are revalidated and skipped or reused where practical.
 
@@ -105,7 +105,9 @@ For Visual Studio Build Tools, the installer validates first. If Build Tools are
 - **N** is useful for Windows Sandbox, quick validation, or a machine where you do not want Build Tools installed now.
 - If you choose **N**, StarBreaker build steps may skip unless existing binaries validate.
 
-Windows Sandbox is useful for checking the launch flow, root selection, Smart App Control standby behavior, Build Tools skip behavior, and logs. It is not proof that the full toolchain installs correctly. Visual Studio Build Tools can take too long or fail in Sandbox, and some Sandbox images may not have the Smart App Control settings UI or protocol handler available. If Smart App Control cannot be disabled inside Sandbox, do not use that Sandbox run for full tool-install validation.
+Windows Sandbox is useful for checking the launch flow, Smart App Control standby behavior, root selection, tool install flow, Build Tools skip/full-install behavior, logs, and Blender UI smoke tests. It is not proof that the full toolchain behaves exactly like a normal desktop. Sandbox can have input lag or scrolling issues in Blender, Visual Studio Build Tools can take too long or fail there, and some Sandbox images may not have the Smart App Control settings UI or protocol handler available.
+
+If you test Git repos in Sandbox, do **not** map the entire DevRoot as `C:\dev`. Mapping all of `C:\dev` from the host can make Git report dubious ownership because the repos are owned by a different Windows SID. For large P4K capacity, map only storage such as `C:\Sandbox\scdata` on the host to `C:\dev\scdata` in Sandbox, and keep `C:\dev\starcitizen` internal to the Sandbox.
 
 ## What this guide covers
 
@@ -136,6 +138,7 @@ Please support and credit the original tool authors.
 ## Table of contents
 
 - [Recommended one-click installer](#recommended-one-click-installer)
+- [Folder layout used in this guide](#folder-layout-used-in-this-guide)
 - [Installer logs, setup-state, and reruns](#installer-logs-setup-state-and-reruns)
 - [Troubleshooting quick fixes](#troubleshooting-quick-fixes)
 
@@ -157,7 +160,7 @@ Please support and credit the original tool authors.
 16. [Explore P4K paths](#16-explore-p4k-paths)
 17. [Resolve and export an Aurora MR example](#17-resolve-and-export-an-aurora-mr-example)
 18. [Install the StarBreaker Blender add-on](#18-install-the-starbreaker-blender-add-on)
-19. [Import the decomposed package into Blender](#19-import-the-decomposed-package-into-blender)
+19. [Open the decomposed package in Blender](#19-open-the-decomposed-package-in-blender)
 41. [A little bit of history behind this tutorial](#41-a-little-bit-of-history-behind-this-tutorial)
 42. [New to Star Citizen?](#42-new-to-star-citizen)
 
@@ -219,12 +222,17 @@ If setup crashes, is blocked by Windows Security, needs a relaunch, repairs WinG
 
 Useful support files:
 
-- `<DevRoot>\scdata\logs`
+- `<DevRoot>\scdata\logs\setup-*.log`
+- `<DevRoot>\scdata\logs\command-*.log`
 - `<DevRoot>\scdata\setup-state.json`
+- `<DevRoot>\scdata\work\open_aurora_mr*.log`, if generated
+- `<DevRoot>\scdata\work\*scene_blend*audit*.log`, if generated
+- any Blender/Aurora audit logs generated under `<DevRoot>\scdata\work`
+- `<DevRoot>\scdata\work\Open-Aurora-MR-in-Blender.cmd`, if generated by the installer
 - `<DevRoot>\starcitizen\output\reports`
 - `<DevRoot>\starcitizen\work`
 
-When asking for help, include the latest setup log, any relevant command log, `setup-state.json`, screenshots of errors, and the install root you selected.
+When asking for help, include the latest setup log, any relevant command log, `setup-state.json`, Blender/Aurora helper logs when available, screenshots of Blender or Windows Security prompts, and the install root you selected.
 
 ## 1. Install base tools
 
@@ -248,7 +256,7 @@ git --version
 If `git` is not found, open **Edit the system environment variables** from the Start menu, then go to:
 
 ```text
-Environment Variables → System variables → Path → Edit
+Environment Variables -> System variables -> Path -> Edit
 ```
 
 Add this entry if missing:
@@ -288,10 +296,10 @@ Remove-Item D:\dev\gh\* -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item "$ghRoot\*" D:\dev\gh -Recurse -Force
 ```
 
-Add GitHub CLI to User path by open **Edit the system environment variables** from the Start menu, then go to:
+Add GitHub CLI to your user Path by opening **Edit the system environment variables** from the Start menu, then go to:
 
 ```text
-Environment Variables → System variables → Path → Edit
+Environment Variables -> User variables -> Path -> Edit
 ```
 Add this entry if missing:
 
@@ -446,7 +454,7 @@ pip --version
 If Windows aliases intercept Python, disable them here:
 
 ```text
-Settings → Apps → Advanced app settings → App execution aliases
+Settings -> Apps -> Advanced app settings -> App execution aliases
 ```
 
 Turn off:
@@ -592,7 +600,7 @@ where.exe cmake
 cmake --version
 ```
 
-Developer PowerShell may place Visual Studio’s bundled CMake first. If you need the `D:\dev` CMake for a session, run:
+Developer PowerShell may place Visual Studio's bundled CMake first. If you need the `D:\dev` CMake for a session, run:
 
 ```powershell
 $env:Path = "D:\dev\cmake\bin;$env:Path"
@@ -612,7 +620,7 @@ git clone https://github.com/diogotr7/StarBreaker.git
 git clone https://github.com/scorg-tools/Blender-Tools.git
 git clone https://github.com/dolkensp/unp4k.git
 git clone https://github.com/markemp/Cryengine-Converter.git
-git clone https://github.com/Madfish71/SCTextureConverter
+git clone https://github.com/Madfish71/SCTextureConverter.git
 ```
 
 ## 8. Install Visual Studio Code and extensions
@@ -1103,8 +1111,10 @@ Resolve the MR variant:
 Export the Aurora MR as a decomposed package:
 
 ```powershell
-.\target\release\starbreaker.exe entity export RSI_Aurora_MR D:\dev\scdata\exports\aurora_mr_decomposed --p4k "$env:SC_DATA_P4K" --kind decomposed --materials textures --lod 1 --mip 2 *> "D:\dev\scdata\work\export_RSI_Aurora_MR_decomposed_$env:SC_BUILD.txt"
+.\target\release\starbreaker.exe entity export RSI_Aurora_MR_PU_AI_CIV D:\dev\scdata\exports\aurora_mr_decomposed --p4k "$env:SC_DATA_P4K" --kind decomposed --materials textures --lod 1 --mip 2 *> "D:\dev\scdata\work\export_RSI_Aurora_MR_decomposed_$env:SC_BUILD.txt"
 ```
+
+The installer may resolve or export the full `RSI_Aurora_MR_PU_AI_CIV` target, and generated package names may look like `RSI Aurora MR PU AI CIV_LOD1_TEX2`. If you use `RSI_Aurora_MR` as shorthand, confirm the loadout/export logs so you know which entity was actually exported.
 
 Create a file-tree log:
 
@@ -1135,33 +1145,95 @@ $src='D:\dev\starcitizen\StarBreaker\blender_addon\starbreaker_addon'; $dst="$en
 Open Blender, then go to:
 
 ```text
-Edit → Preferences → Add-ons
+Edit -> Preferences -> Add-ons
 ```
 
 Search for **StarBreaker** and enable it.
 
-## 19. Import the decomposed package into Blender
+## 19. Open the decomposed package in Blender
+
+For the normal visual Blender workflow:
+
+1. Export the Aurora MR decomposed package.
+2. Open the generated `scene.blend` directly.
+
+Path pattern:
+
+```text
+<DevRoot>\scdata\exports\aurora_mr_decomposed\Packages\<package name>\scene.blend
+```
+
+Example:
+
+```text
+D:\dev\scdata\exports\aurora_mr_decomposed\Packages\RSI Aurora MR PU AI CIV_LOD1_TEX2\scene.blend
+```
+
+`scene.blend` is the StarBreaker Blender scene file. It links the exported mesh `.blend` libraries and is the correct file to open for visual review. `scene.json` remains important metadata used by StarBreaker and the add-on for package structure, animation entries, and sidecar files, but it is not the normal visual-open target.
+
+If the installer generated this launcher, you can use it instead of browsing to the file manually:
+
+```text
+D:\dev\scdata\work\Open-Aurora-MR-in-Blender.cmd
+```
 
 In Blender:
 
+1. Click inside the 3D Viewport.
+2. Press **N** to open the right-side sidebar.
+3. Choose the **StarBreaker** tab.
+4. If the StarBreaker controls are missing, select the top StarBreaker package root object in the Outliner.
+5. Scroll inside the StarBreaker tab to find **Animations**.
+
+Windows Sandbox can have input delay or scrolling issues, so Blender UI behavior there may feel laggy even when the add-on is working.
+
+### Seeing textures and materials in Blender
+
+Solid viewport mode can make the model look gray or white. Use **Material Preview** or **Rendered** mode to see textures/materials where exported and supported.
+
+The installer attempts to set **Rendered** view and **POM Detail** to **High** where possible. The StarBreaker panel also has **POM Detail** and **Refresh Materials** controls.
+
+If textures look missing:
+
+1. Select the package root in the Outliner.
+2. Press **N** in the 3D Viewport.
+3. Open the **StarBreaker** tab.
+4. Set **POM Detail** to **High**.
+5. Click **Refresh Materials**.
+6. Switch the viewport to **Rendered** or **Material Preview**.
+
+### Finding StarBreaker animation controls
+
+StarBreaker animation controls are in the **StarBreaker** sidebar tab, not necessarily Blender's generic Animation workspace/tab.
+
+1. Select the StarBreaker package root or entity root.
+2. Press **N** in the 3D Viewport.
+3. Open the **StarBreaker** tab.
+4. Scroll to the **Animations** section.
+
+The controls may appear as rows of buttons for animation states. If controls disappear, reselect the package root. Not every ship or game build exposes every animation control.
+
+In Windows Sandbox, scrolling or input delay can make the panel harder to use.
+
+Advanced legacy diagnostic path only: if a developer specifically asks you to test the `scene.json` importer, use the StarBreaker package import control. This may not match the normal direct `scene.blend` workflow. For normal visual review, open `scene.blend`; `scene.json` is metadata, animation, and package data.
+
 ```text
-3D Viewport → press N → StarBreaker tab → Import StarBreaker Package
+3D Viewport -> press N -> StarBreaker tab -> Import StarBreaker Package
 ```
 
-Select:
+Select the metadata file only for that diagnostic import:
 
 ```text
-D:\dev\scdata\exports\aurora_mr_decomposed\Packages\RSI Aurora MR_LOD1_TEX2\scene.json
+<DevRoot>\scdata\exports\aurora_mr_decomposed\Packages\<package name>\scene.json
 ```
 
-After import:
+Example:
 
-1. Disable viewport overlays to reduce black helper-line clutter.
-2. In the Outliner, select the Aurora package root.
-3. In the StarBreaker sidebar animation menu, find **Landing Gear Retract**.
-4. Click **Last**.
+```text
+D:\dev\scdata\exports\aurora_mr_decomposed\Packages\RSI Aurora MR PU AI CIV_LOD1_TEX2\scene.json
+```
 
-The landing gear should retract if the matching animation data was exported and applied successfully.
+After a legacy diagnostic import, select the Aurora package root in the Outliner and use the StarBreaker sidebar only as a developer diagnostic. Animation controls and results can differ from the direct `scene.blend` workflow.
 
 ## Troubleshooting quick fixes
 
@@ -1171,15 +1243,25 @@ The landing gear should retract if the matching animation data was exported and 
 - **Git is installed but clone/versioning fails**: reopen the terminal, check `git --version`, and review whether Windows Security blocked Git for Windows components.
 - **Python opens Microsoft Store**: disable the `python.exe` and `python3.exe` App Installer aliases under **Settings > Apps > Advanced app settings > App execution aliases**.
 - **VS Code `code` command not found**: add the VS Code `bin` folder to `Path`, reopen PowerShell, then run `where.exe code`.
+- **Blender opens but I do not see the StarBreaker panel**: enable the add-on in **Edit > Preferences > Add-ons**, search for **StarBreaker**, click inside the 3D Viewport, press **N**, then choose the **StarBreaker** tab.
+- **Blender opens but I do not see animation buttons**: select the package root in the Outliner, open the **StarBreaker** tab, and scroll down to **Animations**. Sandbox scrolling or input delay may make this harder.
+- **Blender model looks gray or white**: switch to **Material Preview** or **Rendered**, set **POM Detail** to **High**, and click **Refresh Materials**.
+- **Blender opens `scene.json` or import fails**: for the normal visual workflow, open `scene.blend`, not `scene.json`. `scene.json` is metadata/animation/package data.
+- **Installer reports Aurora/Blender WARN or FAILED**: attach setup logs, `setup-state.json`, `<DevRoot>\scdata\work\open_aurora_mr*.log` if generated, `<DevRoot>\scdata\work\*scene_blend*audit*.log` if generated, any Blender/Aurora audit logs from `scdata\work`, and the generated `Open-Aurora-MR-in-Blender.cmd` if present. Confirm `scene.blend` exists under the Aurora package folder.
+- **Windows Sandbox Git dubious ownership**: do not map the whole DevRoot into Sandbox. Map only `scdata` for P4K capacity; mapping all of `C:\dev` can make Git think repos are owned by another SID.
 - **Rerun after crash or partial setup**: run the same installer again. It revalidates completed steps and keeps useful details in `setup-state.json` and logs.
 
-## 20. More to be added at a later date
+## 20. AI-assisted setup and future MCP support
 
-## AI-assisted setup
-
-A script could eventually automate much of this setup. You can use a current LLM to help generate one from this guide, but review every command before running it. AI assistants make mistakes, and setup scripts can change your system quickly.
+The one-click installer now automates much of this setup. AI assistants can still help with review, troubleshooting, repo work, and future workflow development, but review every command before running it. AI assistants make mistakes, and setup scripts can change your system quickly.
 
 For best results, ask your AI assistant to explain each command, check paths before running anything, and avoid destructive commands unless you fully understand what they do.
+
+StarBreaker already has an MCP component for game-data/query workflows. Blender Lab also has an official Blender MCP Server direction here:
+
+https://www.blender.org/lab/mcp-server/
+
+Future versions of this project may add optional AI Blender control using MCP. The current one-click installer does **not** install Blender MCP by default, and AI control of Blender should be opt-in because it can let an AI modify the open Blender scene.
 
 ## 41. A little bit of history behind this tutorial
 

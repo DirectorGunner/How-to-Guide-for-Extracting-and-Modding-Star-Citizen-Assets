@@ -1228,7 +1228,12 @@ function Start-InstallerGuiProcess {
         [string[]]$ArgumentList = @()
     )
     if ($Script:NoGui -or (Test-NonLiveInstallerMode)) { throw "Non-live harness blocked GUI launch: $FilePath" }
-    Start-Process -FilePath $FilePath -ArgumentList $ArgumentList | Out-Null
+    $argLine = ConvertTo-StarBreakerCommandLine -Arguments $ArgumentList
+    if ([string]::IsNullOrWhiteSpace($argLine)) {
+        Start-Process -FilePath $FilePath | Out-Null
+    } else {
+        Start-Process -FilePath $FilePath -ArgumentList $argLine | Out-Null
+    }
 }
 
 
@@ -8391,6 +8396,39 @@ function Test-AuroraImportCatastrophicText {
     return ($text -match '(?i)Bad glTF|json error:\s*utf-8|starbreaker_missing_asset|no mesh objects found|no usable mesh objects|no nonzero used meshes')
 }
 
+function Test-AuroraSceneBlendOpenFailureText {
+    param([string[]]$Lines = @())
+    $text = (@($Lines) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return ($text -match '(?i)Cannot read file|No such file or directory|Could not open scene\.blend|open_mainfile|failed to read blend|Unable to open|Failed to open|read file')
+}
+
+function Test-AuroraSceneBlendPathSplitFailureText {
+    param([string]$SceneBlend = "", [string[]]$Lines = @())
+    if ([string]::IsNullOrWhiteSpace($SceneBlend) -or -not ([string]$SceneBlend).Contains(" ")) { return $false }
+    if (-not (Test-Path -LiteralPath $SceneBlend)) { return $false }
+    $text = (@($Lines) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    $packageDir = Split-Path $SceneBlend -Parent
+    $packageName = Split-Path $packageDir -Leaf
+    $firstToken = @($packageName -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+    if ($firstToken.Count -eq 0) { return $false }
+    $splitPath = Join-Path (Split-Path $packageDir -Parent) ([string]$firstToken[0])
+    $escapedSplitPath = [regex]::Escape($splitPath)
+    $escapedFirstToken = [regex]::Escape([string]$firstToken[0])
+    return (($text -match '(?i)Cannot read file') -and ($text -match '(?i)No such file or directory') -and (($text -match $escapedSplitPath) -or ($text -match ("(?i)Packages[\\/]" + $escapedFirstToken))))
+}
+
+function Get-AuroraBlenderBackgroundArguments {
+    param([Parameter(Mandatory=$true)][string]$HelperScript)
+    return @("--background", "--python", $HelperScript)
+}
+
+function Get-AuroraBlenderGuiArguments {
+    param([Parameter(Mandatory=$true)][string]$HelperScript)
+    return @("--python", $HelperScript)
+}
+
 function New-AuroraImportAuditResult {
     param(
         [string]$SceneJson = "",
@@ -8437,6 +8475,10 @@ function New-AuroraImportAuditResult {
     $hasPackageRoot = -not [string]::IsNullOrWhiteSpace($PackageRoot)
     $hasUsableGeometry = (($MeshObjectCount -gt 0) -or ($NonzeroUsedMeshDatablockCount -gt 0) -or ($CollectionInstanceCount -gt 0 -and $LinkedLibraryCount -gt 0))
     $catastrophicText = Test-AuroraImportCatastrophicText -Lines $Errors
+    $sceneBlendExists = (-not [string]::IsNullOrWhiteSpace($SceneBlend) -and (Test-Path -LiteralPath $SceneBlend))
+    $sceneJsonExists = (-not [string]::IsNullOrWhiteSpace($SceneJson) -and (Test-Path -LiteralPath $SceneJson))
+    $openFailureText = Test-AuroraSceneBlendOpenFailureText -Lines $Errors
+    $pathSplitFailureText = Test-AuroraSceneBlendPathSplitFailureText -SceneBlend $SceneBlend -Lines $Errors
     $geometryVerdict = if ([string]::IsNullOrWhiteSpace($GeometryStatus)) { if ($hasUsableGeometry -and $hasPackageRoot) { "OK" } else { "FAILED" } } else { $GeometryStatus.ToUpperInvariant() }
     $materialsVerdict = if ([string]::IsNullOrWhiteSpace($MaterialsStatus)) { if ($MissingFileBackedImageCount -gt 0) { "WARN" } else { "OK" } } else { $MaterialsStatus.ToUpperInvariant() }
     $addonVerdict = if ([string]::IsNullOrWhiteSpace($AddonStatus)) { "WARN" } else { $AddonStatus.ToUpperInvariant() }
@@ -8444,16 +8486,22 @@ function New-AuroraImportAuditResult {
     $animationControlsVerdict = if ([string]::IsNullOrWhiteSpace($AnimationControlsStatus)) { if ([string]$AnimationOperatorPollAfter -eq "True") { "OK" } else { "WARN" } } else { $AnimationControlsStatus.ToUpperInvariant() }
     $status = "OK"
     $reason = "Blender scene.blend validation produced usable geometry."
-    if ([string]::IsNullOrWhiteSpace($SceneBlend) -or -not (Test-Path -LiteralPath $SceneBlend)) {
+    if (-not $sceneBlendExists) {
         $status = "FAILED"; $reason = "Aurora scene.blend was missing after export."
         $geometryVerdict = "FAILED"
-    } elseif ([string]::IsNullOrWhiteSpace($SceneJson) -or -not (Test-Path -LiteralPath $SceneJson)) {
+    } elseif (-not $sceneJsonExists) {
         $status = "FAILED"; $reason = "Aurora scene.json was missing after export."
+    } elseif ($pathSplitFailureText) {
+        $status = "FAILED"; $reason = "Blender launch argument quoting/path split failure. Blender failed to open an existing scene.blend, likely because the path was split at spaces. This should not happen after the fix."
+        $geometryVerdict = "FAILED"
+    } elseif ($openFailureText -and (-not $hasPackageRoot -or -not $hasUsableGeometry)) {
+        $status = "FAILED"; $reason = "Blender failed to open existing scene.blend. See helper stdout/stderr logs for details."
+        $geometryVerdict = "FAILED"
     } elseif (-not $hasPackageRoot) {
-        $status = "FAILED"; $reason = "Blender scene.blend validation did not find a StarBreaker package root."
+        $status = "FAILED"; $reason = "Blender opened scene.blend but geometry validation failed: no StarBreaker package root was found."
         $geometryVerdict = "FAILED"
     } elseif (-not $hasUsableGeometry) {
-        $status = "FAILED"; $reason = "Blender scene.blend validation found no usable mesh objects or used mesh datablocks."
+        $status = "FAILED"; $reason = "Blender opened scene.blend but geometry validation failed: no usable mesh objects or used mesh datablocks were found."
         $geometryVerdict = "FAILED"
     } elseif ($catastrophicText) {
         $status = "FAILED"; $reason = "Blender import log contains catastrophic import errors."
@@ -8558,6 +8606,7 @@ function ConvertTo-AuroraLogInt {
 function Get-AuroraImportAuditFromLogs {
     param(
         [string]$SceneJson,
+        [string]$SceneBlend = "",
         [string]$HelperLog,
         [string]$StdoutLog = "",
         [string]$StderrLog = ""
@@ -8571,15 +8620,17 @@ function Get-AuroraImportAuditFromLogs {
     }
     $errors = New-Object 'System.Collections.Generic.List[string]'
     foreach ($line in @($lines.ToArray())) {
-        if ([string]$line -match '(?i)Bad glTF|json error:\s*utf-8|starbreaker_missing_asset|no mesh objects found|no usable mesh objects|no nonzero used meshes|Traceback|ERROR|failed') {
+        if ([string]$line -match '(?i)Bad glTF|json error:\s*utf-8|starbreaker_missing_asset|no mesh objects found|no usable mesh objects|no nonzero used meshes|Cannot read file|No such file or directory|Could not open scene\.blend|open_mainfile|failed to read blend|Traceback|ERROR|failed') {
             [void]$errors.Add([string]$line)
         }
     }
     $sceneSummary = Get-AuroraMeshAssetSummary -SceneJson $SceneJson
     foreach ($e in @($sceneSummary.errors)) { if (-not [string]::IsNullOrWhiteSpace([string]$e)) { [void]$errors.Add([string]$e) } }
+    $loggedSceneBlend = Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "SCENE_BLEND"
+    if ([string]::IsNullOrWhiteSpace($loggedSceneBlend)) { $loggedSceneBlend = $SceneBlend }
     $audit = New-AuroraImportAuditResult `
         -SceneJson $SceneJson `
-        -SceneBlend (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "SCENE_BLEND") `
+        -SceneBlend $loggedSceneBlend `
         -PackageRoot (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "PACKAGE_ROOT") `
         -ObjectCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "OBJECT_COUNT")) `
         -MeshObjectCount (ConvertTo-AuroraLogInt (Get-AuroraLogMarkerValue -Lines @($lines.ToArray()) -Name "MESH_OBJECT_COUNT")) `
@@ -9430,7 +9481,7 @@ if not exist "%SC_AURORA_HELPER_SCRIPT%" (
   echo   %SC_AURORA_HELPER_SCRIPT%
   exit /b 1
 )
-start "" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%" --python "%SC_AURORA_HELPER_SCRIPT%"
+start "" "%SC_AURORA_BLENDER_EXE%" --python "%SC_AURORA_HELPER_SCRIPT%"
 exit /b 0
 "@
     Write-InstallerFile -Path $launcherPath -Text $content
@@ -9539,6 +9590,8 @@ log('Blender version=' + bpy.app.version_string)
 
 scene_blend_exists = bool(scene_blend) and os.path.isfile(scene_blend)
 scene_json_exists = bool(scene_json) and os.path.isfile(scene_json)
+log('scene_blend_exists=' + str(scene_blend_exists))
+log('scene_json_exists=' + str(scene_json_exists))
 if scene_blend_exists:
     try:
         if not bpy.data.filepath or norm(bpy.data.filepath) != norm(scene_blend):
@@ -9973,6 +10026,8 @@ emit('SCENE_BLEND_VALIDATION_PRIMARY', True)
 emit('RUNTIME_SCENE_JSON_IMPORT_USED', False)
 emit('SCENE_BLEND', scene_blend)
 emit('SCENE_JSON', scene_json)
+emit('SCENE_BLEND_EXISTS', scene_blend_exists)
+emit('SCENE_JSON_EXISTS', scene_json_exists)
 emit('VERDICT', verdict)
 emit('REASON', reason)
 emit('PACKAGE_ROOT', getattr(root, 'name', '') if root is not None else '')
@@ -10019,9 +10074,11 @@ log('Helper finished.')
         $env:SC_AURORA_SCENE_JSON = $SceneJson
         $env:SC_AURORA_HELPER_LOG = $auditLogPath
         $env:SC_AURORA_HELPER_MODE = "audit"
-        Assert-InstallerExternalCommandAllowed -Exe $blenderExe -Arguments @("--background", $sceneBlend, "--python", $pyPath)
-        $proc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", $sceneBlend, "--python", $pyPath) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru -WindowStyle Hidden
-        $audit = Get-AuroraImportAuditFromLogs -SceneJson $SceneJson -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
+        $backgroundArgs = Get-AuroraBlenderBackgroundArguments -HelperScript $pyPath
+        $backgroundArgLine = ConvertTo-StarBreakerCommandLine -Arguments $backgroundArgs
+        Assert-InstallerExternalCommandAllowed -Exe $blenderExe -Arguments $backgroundArgs
+        $proc = Start-Process -FilePath $blenderExe -ArgumentList $backgroundArgLine -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru -WindowStyle Hidden
+        $audit = Get-AuroraImportAuditFromLogs -SceneJson $SceneJson -SceneBlend $sceneBlend -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
         if ([string]::IsNullOrWhiteSpace([string]$audit.SceneBlend)) { $audit.SceneBlend = $sceneBlend }
         Set-AuroraImportStateFromAudit -Audit $audit -HelperLog $auditLogPath -StdoutLog $stdoutPath -StderrLog $stderrPath
         Write-Host ("Aurora scene.blend validation verdict: {0}" -f [string]$audit.Status) -ForegroundColor $(if ([string]$audit.Status -eq "OK") { "Green" } else { "Red" })
@@ -10044,9 +10101,11 @@ log('Helper finished.')
 
         if (-not $Script:NoGui -and -not (Test-NonLiveInstallerMode)) {
             Write-Host "Opening Blender directly with generated scene.blend for visual review..." -ForegroundColor Cyan
+            $env:SC_AURORA_SCENE_BLEND = $sceneBlend
+            $env:SC_AURORA_SCENE_JSON = $SceneJson
             $env:SC_AURORA_HELPER_LOG = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend_gui.log"
             $env:SC_AURORA_HELPER_MODE = "gui"
-            Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @($sceneBlend, "--python", $pyPath)
+            Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList (Get-AuroraBlenderGuiArguments -HelperScript $pyPath)
         }
     } catch {
         Write-Warning "Could not validate/open generated scene.blend automatically: $($_.Exception.Message)"
@@ -11318,6 +11377,31 @@ function Invoke-SelfTest {
         Write-InstallerFile -Path $fakeScene -Text '{"objects":[]}'
         $fakeBlend = Join-Path $auroraTestRoot "scene.blend"
         Write-InstallerFile -Path $fakeBlend -Text "BLENDER synthetic scene file"
+        $spacePackageRoot = Join-Path $auroraTestRoot "Packages\RSI Aurora MR PU AI CIV_LOD1_TEX2"
+        New-InstallerDirectory -Path $spacePackageRoot
+        $spaceScene = Join-Path $spacePackageRoot "scene.json"
+        $spaceBlend = Join-Path $spacePackageRoot "scene.blend"
+        Write-InstallerFile -Path $spaceScene -Text '{"objects":[]}'
+        Write-InstallerFile -Path $spaceBlend -Text "BLENDER synthetic scene file with spaces in package path"
+        Assert-SelfTest ((Find-AuroraExportSceneBlend -ExportDir $auroraTestRoot -SceneJson $spaceScene) -eq $spaceBlend) "Find-AuroraExportSceneBlend did not locate scene.blend in a package folder with spaces."
+        $spaceHelper = Join-Path $auroraTestRoot "open helper with spaces.py"
+        Write-InstallerFile -Path $spaceHelper -Text "# synthetic helper"
+        $backgroundArgs = Get-AuroraBlenderBackgroundArguments -HelperScript $spaceHelper
+        $backgroundArgLine = ConvertTo-StarBreakerCommandLine -Arguments $backgroundArgs
+        Assert-SelfTest (-not ($backgroundArgs -contains $spaceBlend)) "Background Blender validation still passes scene.blend positionally."
+        Assert-SelfTest (-not $backgroundArgLine.Contains($spaceBlend)) "Background Blender command line still contains scene.blend positionally."
+        Assert-SelfTest ($backgroundArgLine -match '--background\s+--python\s+".*open helper with spaces\.py"') "Background Blender helper path was not quoted in the command line."
+        $guiArgs = Get-AuroraBlenderGuiArguments -HelperScript $spaceHelper
+        $guiArgLine = ConvertTo-StarBreakerCommandLine -Arguments $guiArgs
+        Assert-SelfTest (-not ($guiArgs -contains $spaceBlend)) "GUI Blender launch still passes scene.blend positionally."
+        Assert-SelfTest (-not $guiArgLine.Contains($spaceBlend)) "GUI Blender command line still contains scene.blend positionally."
+        $fakeBlender = Join-Path $auroraTestRoot "fake blender\blender.exe"
+        New-InstallerDirectory -Path (Split-Path $fakeBlender -Parent)
+        Write-InstallerFile -Path $fakeBlender -Text "synthetic blender executable placeholder"
+        $launcherPath = Write-AuroraSceneBlendLauncher -BlenderExe $fakeBlender -SceneBlend $spaceBlend -SceneJson $spaceScene -HelperScript $spaceHelper
+        $launcherText = Get-Content -LiteralPath $launcherPath -Raw
+        Assert-SelfTest (-not ($launcherText -match 'start "" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%"')) "Generated Aurora launcher still passes scene.blend positionally."
+        Assert-SelfTest ($launcherText -match 'start "" "%SC_AURORA_BLENDER_EXE%" --python "%SC_AURORA_HELPER_SCRIPT%"') "Generated Aurora launcher does not use helper-open launch shape."
         $sceneBlendOk = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 420 -MeshObjectCount 118 -NonzeroUsedMeshDatablockCount 118 -CollectionInstanceCount 0 -ActionCount 3 -LinkedLibraryCount 12 -MissingAssetCount 0 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120 -MaterialCount 88 -ImageCount 42 -AddonStatus "OK" -GeometryStatus "OK" -MaterialsStatus "OK" -AnimationMetadataStatus "OK" -AnimationControlsStatus "OK" -PomDetailStatus "OK" -ViewportRenderedStatus "OK" -RefreshMaterialsStatus "OK" -SceneBlendValidationPrimary:$true
         Assert-SelfTest ([string]$sceneBlendOk.Status -eq "OK") "scene.blend geometry validation did not pass when meshes were present."
         Set-AuroraImportStateFromAudit -Audit $sceneBlendOk -HelperLog (Join-Path $auroraTestRoot "helper-ok.log")
@@ -11326,6 +11410,12 @@ function Invoke-SelfTest {
         Assert-SelfTest ([string]$materialWarn.Status -eq "OK") "Material or animation warning incorrectly failed scene.blend geometry validation."
         $missingBlend = New-AuroraImportAuditResult -SceneJson $fakeScene -PackageRoot "RSI Aurora MR" -ObjectCount 420 -MeshObjectCount 118 -NonzeroUsedMeshDatablockCount 118 -GeometryStatus "OK"
         Assert-SelfTest ([string]$missingBlend.Status -eq "FAILED") "Missing scene.blend was not rejected."
+        $pathSplit = New-AuroraImportAuditResult -SceneJson $spaceScene -SceneBlend $spaceBlend -Errors @('Cannot read file "C:\dev\scdata\exports\aurora_mr_decomposed\Packages\RSI": No such file or directory')
+        Assert-SelfTest ([string]$pathSplit.Status -eq "FAILED") "Path-split scene.blend open failure was not rejected."
+        Assert-SelfTest ([string]$pathSplit.Reason -match "path was split at spaces|argument quoting") "Path-split scene.blend open failure reason was unclear."
+        $openFailure = New-AuroraImportAuditResult -SceneJson $spaceScene -SceneBlend $spaceBlend -Errors @("Could not open scene.blend: failed to read blend file")
+        Assert-SelfTest ([string]$openFailure.Status -eq "FAILED") "Existing scene.blend open failure was not rejected."
+        Assert-SelfTest ([string]$openFailure.Reason -match "failed to open existing scene\.blend") "Existing scene.blend open failure reason was unclear."
         $zeroMesh = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 129 -MeshObjectCount 0 -NonzeroUsedMeshDatablockCount 0 -CollectionInstanceCount 0 -ActionCount 0 -LinkedLibraryCount 0 -MissingAssetCount 120 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120
         Assert-SelfTest ([string]$zeroMesh.Status -eq "FAILED") "Package-root-only Aurora import was not rejected."
         Assert-SelfTest ([string]$zeroMesh.Reason -match "no usable mesh objects") "Zero-mesh Aurora rejection reason was unclear."
@@ -11679,15 +11769,23 @@ function Run-AuroraExportExample {
     # steps in isolation.
     $existingSceneJson = Find-AuroraExportSceneJson -ExportDir $exportDir
     if (-not [string]::IsNullOrWhiteSpace($existingSceneJson) -and (Test-Path -LiteralPath $existingSceneJson)) {
-        Write-Host "Found existing Aurora MR export from a previous run:" -ForegroundColor Yellow
-        Write-Host "  $existingSceneJson" -ForegroundColor DarkYellow
-        $reuse = Read-Host "Reuse the existing export and skip re-export? Y/N (default Y)"
-        if ($reuse.Trim() -notmatch '^[Nn]$') {
-            Write-Host "Reusing existing Aurora MR export." -ForegroundColor Green
-            Open-AuroraSceneBlendInBlender -SceneJson $existingSceneJson -ExportDir $exportDir
-            return
+        $existingSceneBlend = Find-AuroraExportSceneBlend -ExportDir $exportDir -SceneJson $existingSceneJson
+        if ([string]::IsNullOrWhiteSpace($existingSceneBlend) -or -not (Test-Path -LiteralPath $existingSceneBlend)) {
+            Write-Host "Found existing Aurora scene.json, but scene.blend is missing. The export cannot be reused for visual success." -ForegroundColor Yellow
+            Write-Host "  scene.json: $existingSceneJson" -ForegroundColor DarkYellow
+            Write-Host "Re-exporting Aurora MR so scene.blend can be validated." -ForegroundColor Cyan
+        } else {
+            Write-Host "Found existing Aurora MR export from a previous run:" -ForegroundColor Yellow
+            Write-Host "  scene.json:  $existingSceneJson" -ForegroundColor DarkYellow
+            Write-Host "  scene.blend: $existingSceneBlend" -ForegroundColor DarkYellow
+            $reuse = Read-Host "Reuse the existing export and skip re-export? Y/N (default Y)"
+            if ($reuse.Trim() -notmatch '^[Nn]$') {
+                Write-Host "Reusing existing Aurora MR export." -ForegroundColor Green
+                Open-AuroraSceneBlendInBlender -SceneJson $existingSceneJson -ExportDir $exportDir
+                return
+            }
+            Write-Host "Re-exporting Aurora MR (existing export will be replaced)." -ForegroundColor Cyan
         }
-        Write-Host "Re-exporting Aurora MR (existing export will be replaced)." -ForegroundColor Cyan
     }
 
     Write-Host "Writing Aurora work logs under: $ScWorkRoot" -ForegroundColor Cyan
