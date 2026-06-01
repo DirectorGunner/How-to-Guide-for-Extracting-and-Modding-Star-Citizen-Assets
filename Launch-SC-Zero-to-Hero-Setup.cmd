@@ -1436,6 +1436,14 @@ function Add-SetupSkipRecord {
     }) | Out-Null
 }
 
+function Set-CurrentSetupStepSkipped {
+    param([string]$Id, [string]$Name, [string]$Reason)
+    if ([string]::IsNullOrWhiteSpace($Reason)) { $Reason = "Skipped." }
+    Add-SetupSkipRecord -Id $Id -Name $Name -Reason $Reason
+    $Script:CurrentStepResultStatus = "SKIPPED"
+    $Script:CurrentStepResultReason = $Reason
+}
+
 function Get-StepDependencySkipReason {
     param([string]$Id)
 
@@ -1980,7 +1988,13 @@ function Copy-LargeFileWithProgress {
         Write-Warning "Partial copy found: $partial ($(Format-ByteSize $partialSize))"
         if (-not $AssumeYes) {
             $ans = Read-Host "Delete partial copy and restart? Type D to delete/restart or S to skip"
-            if ($ans.Trim() -notmatch '^(d|delete)$') { throw "Large file copy skipped because a partial copy already exists." }
+            if ($ans.Trim() -notmatch '^(d|delete)$') {
+                $reason = "Data.p4k copy was skipped because a partial copy already exists."
+                $Script:P4KState.status = "SKIPPED"
+                $Script:P4KState.skippedReason = $reason
+                Set-CurrentSetupStepSkipped -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason $reason
+                return $false
+            }
         }
         Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
     }
@@ -1992,9 +2006,7 @@ function Copy-LargeFileWithProgress {
         Write-Host ("  Source size : {0}" -f (Format-ByteSize $check.SourceSize)) -ForegroundColor Yellow
         Write-Host ("  Available   : {0}" -f (Format-ByteSize $check.Free)) -ForegroundColor Yellow
         Write-Host ("  Required    : {0}" -f (Format-ByteSize $check.RequiredFree)) -ForegroundColor Yellow
-        Add-SetupSkipRecord -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason "Insufficient free space for Data.p4k copy."
-        $Script:CurrentStepResultStatus = "SKIPPED"
-        $Script:CurrentStepResultReason = "Insufficient free space for Data.p4k copy."
+        Set-CurrentSetupStepSkipped -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason "Insufficient free space for Data.p4k copy."
         return $false
     }
     if ($check.LowAfterCopy) {
@@ -2153,8 +2165,9 @@ function Find-BlenderInstalls {
 function Select-OrInstallBlender {
     Write-Step "Locating or installing Blender"
     if ($SkipBlender) {
-        Add-SetupSkipRecord -Id "locate-blender" -Name "Locate or install Blender" -Reason "-SkipBlender supplied."
+        $reason = "User skipped Blender setup via -SkipBlender."
         $Script:BlenderState.status = "SKIPPED"
+        Set-CurrentSetupStepSkipped -Id "locate-blender" -Name "Locate or install Blender" -Reason $reason
         return
     }
     if (-not [string]::IsNullOrWhiteSpace($BlenderPath)) {
@@ -2178,7 +2191,11 @@ function Select-OrInstallBlender {
             Write-Host "  C) Custom path"
             Write-Host "  S) Skip"
             $ans = Read-Host "Choose Blender install"
-            if ($ans.Trim() -match '^[Ss]$') { $Script:BlenderState.status = "SKIPPED"; return }
+            if ($ans.Trim() -match '^[Ss]$') {
+                $Script:BlenderState.status = "SKIPPED"
+                Set-CurrentSetupStepSkipped -Id "locate-blender" -Name "Locate or install Blender" -Reason "User skipped Blender setup."
+                return
+            }
             if ($ans.Trim() -match '^[Cc]$') { $chosen = Resolve-BlenderExeFromPath -Path (Read-Host "Enter blender.exe path") }
             elseif ($ans.Trim() -match '^\d+$') { $idx = [int]$ans - 1; if ($idx -ge 0 -and $idx -lt $existing.Count) { $chosen = $existing[$idx] } }
         }
@@ -2202,7 +2219,7 @@ function Select-OrInstallBlender {
     if (-not $PromptForBlender -and $AssumeYes) {
         Write-Warning "Blender was not found. Use -PromptForBlender or -BlenderPath to configure it."
         $Script:BlenderState.status = "SKIPPED"
-        Add-SetupSkipRecord -Id "locate-blender" -Name "Locate or install Blender" -Reason "Blender not found and prompting disabled."
+        Set-CurrentSetupStepSkipped -Id "locate-blender" -Name "Locate or install Blender" -Reason "Blender executable was not selected and prompting was disabled."
         return
     }
     Write-Host "Do you already have Blender installed?" -ForegroundColor Cyan
@@ -2210,7 +2227,11 @@ function Select-OrInstallBlender {
     Write-Host "  N = no, install Blender"
     Write-Host "  S = skip Blender setup for now"
     $answer = Read-Host "Blender setup choice"
-    if ($answer.Trim() -match '^[Ss]$') { $Script:BlenderState.status = "SKIPPED"; return }
+    if ($answer.Trim() -match '^[Ss]$') {
+        $Script:BlenderState.status = "SKIPPED"
+        Set-CurrentSetupStepSkipped -Id "locate-blender" -Name "Locate or install Blender" -Reason "User skipped Blender setup."
+        return
+    }
     if ($answer.Trim() -match '^[Yy]$') {
         $custom = Resolve-BlenderExeFromPath -Path (Read-Host "Enter blender.exe path or Blender folder")
         if (Test-BlenderExe -Exe $custom) {
@@ -2233,7 +2254,11 @@ function Select-OrInstallBlender {
     Write-Host "  C) Custom path"
     Write-Host "  S) Skip"
     $choice = Read-Host "Install location"
-    if ($choice.Trim() -match '^[Ss]$') { $Script:BlenderState.status = "SKIPPED"; return }
+    if ($choice.Trim() -match '^[Ss]$') {
+        $Script:BlenderState.status = "SKIPPED"
+        Set-CurrentSetupStepSkipped -Id "locate-blender" -Name "Locate or install Blender" -Reason "User skipped Blender install."
+        return
+    }
     $installDir = ""
     if ($choice.Trim() -match '^[Cc]$') { $installDir = Read-Host "Enter install folder, example C:\Blender Foundation\Blender $version" }
     elseif ($choice.Trim() -match '^\d+$') { $idx = [int]$choice - 1; if ($idx -ge 0 -and $idx -lt $choices.Count) { $installDir = $choices[$idx].Path } }
@@ -2660,9 +2685,7 @@ function Select-OrCopyDataP4k {
     if ($SkipP4K) {
         $Script:P4KState.status = "SKIPPED"
         $Script:P4KState.skippedReason = "-SkipP4K supplied."
-        Add-SetupSkipRecord -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason "-SkipP4K supplied."
-        $Script:CurrentStepResultStatus = "SKIPPED"
-        $Script:CurrentStepResultReason = "-SkipP4K supplied."
+        Set-CurrentSetupStepSkipped -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason "-SkipP4K supplied."
         return
     }
 
@@ -2725,6 +2748,12 @@ function Select-OrCopyDataP4k {
             }
             "2" {
                 $source = Read-Host "Enter path to custom Data.p4k"
+                if ([string]::IsNullOrWhiteSpace($source) -or $source.Trim() -match '^[Ss]$') {
+                    $Script:P4KState.status = "SKIPPED"
+                    $Script:P4KState.skippedReason = "User skipped custom Data.p4k selection."
+                    Set-CurrentSetupStepSkipped -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason $Script:P4KState.skippedReason
+                    return
+                }
                 $sourceIsCustom = $true
             }
             "3" {
@@ -7082,15 +7111,20 @@ function Open-AuroraExportInBlender {
         [Parameter(Mandatory=$true)][string]$SceneJson,
         [Parameter(Mandatory=$true)][string]$ExportDir
     )
-    if ($NoOpenBlenderAfterExport) { return }
+    if ($NoOpenBlenderAfterExport) {
+        Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because NoOpenBlenderAfterExport was set."
+        return
+    }
     if ([string]::IsNullOrWhiteSpace($SceneJson) -or -not (Test-Path -LiteralPath $SceneJson)) {
         Write-Warning "Could not find Aurora scene.json to open in Blender. Expected under: $ExportDir"
+        Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because Aurora scene.json was not found."
         return
     }
     $blenderExe = [string]$Script:BlenderState.exe
     if ([string]::IsNullOrWhiteSpace($blenderExe) -or -not (Test-Path -LiteralPath $blenderExe)) {
         Write-Host "Aurora export succeeded. Open this scene manually in Blender with the StarBreaker add-on:" -ForegroundColor Cyan
         Write-Host "  $SceneJson" -ForegroundColor Yellow
+        Set-CurrentSetupStepSkipped -Id "aurora-example" -Name "Optional Aurora MR export example" -Reason "Blender open skipped because Blender executable was not selected."
         return
     }
 
@@ -8194,6 +8228,127 @@ function Invoke-SelfTest {
         $Script:CurrentStepName = $oldCurrentStepName
         $Script:CurrentStepNumber = $oldCurrentStepNumber
         $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
+        $Script:CurrentStepResultStatus = ""
+        $Script:CurrentStepResultReason = ""
+    }
+
+    try {
+        $oldSteps = $Script:SetupSteps
+        $oldLookup = $Script:SetupStepLookup
+        $oldTimings = $Script:StepTimings
+        $oldSkips = $Script:SetupSkips
+        $oldFailures = $Script:SetupFailures
+        $oldFatal = $Script:FatalFailure
+        $oldSetupStatePath = $Script:SetupStatePath
+        $oldCurrentStepId = $Script:CurrentStepId
+        $oldCurrentStepName = $Script:CurrentStepName
+        $oldCurrentStepNumber = $Script:CurrentStepNumber
+        $oldCurrentCompletedBefore = $Script:CurrentCompletedBefore
+        $oldBlenderState = $Script:BlenderState
+        $oldP4KState = $Script:P4KState
+
+        $Script:StepTimings = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupSkips = New-Object 'System.Collections.Generic.List[object]'
+        $Script:SetupFailures = New-Object 'System.Collections.Generic.List[object]'
+        $Script:FatalFailure = $false
+        $Script:SetupStatePath = Join-Path $Script:HarnessRoot "skip-state-tests\setup-state.json"
+        $Script:BlenderState = [ordered]@{ status = ""; exe = ""; version = ""; installRoot = ""; userConfigRoot = ""; addonLinked = $false; addonLinkType = "" }
+        $Script:P4KState = [ordered]@{ status = ""; build = ""; source = ""; destination = ""; partialDestination = ""; sizeBytes = 0; spaceWarning = $false; readOnly = $false; skippedReason = ""; channel = ""; starCitizenExe = ""; productVersion = ""; fileVersion = "" }
+        $Script:SetupSteps = @(
+            (New-SetupStepObject -Id "setup-git-versioning" -Name "Synthetic dependency source"),
+            (New-SetupStepObject -Id "locate-blender" -Name "Locate or install Blender"),
+            (New-SetupStepObject -Id "step-addon-missing-source" -Name "Synthetic missing Blender add-on source"),
+            (New-SetupStepObject -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k"),
+            (New-SetupStepObject -Id "verify-sc-build" -Name "Verify Star Citizen build environment"),
+            (New-SetupStepObject -Id "step-p4k-process-running" -Name "Synthetic process-running Data.p4k skip"),
+            (New-SetupStepObject -Id "step-p4k-existing-retained" -Name "Synthetic retained Data.p4k destination skip"),
+            (New-SetupStepObject -Id "step-aurora-missing-p4k" -Name "Synthetic Aurora missing Data.p4k skip"),
+            (New-SetupStepObject -Id "step-no-open-blender" -Name "Synthetic NoOpenBlenderAfterExport skip"),
+            (New-SetupStepObject -Id "step-duplicate-skip" -Name "Synthetic duplicate skip")
+        )
+        $Script:SetupStepLookup = @{}
+        for ($i = 0; $i -lt $Script:SetupSteps.Count; $i++) { $Script:SetupStepLookup[$Script:SetupSteps[$i].Id] = ($i + 1) }
+
+        Invoke-SetupStep -Id "setup-git-versioning" -Name "Synthetic dependency source" -ScriptBlock { }
+
+        Invoke-SetupStep -Id "locate-blender" -Name "Locate or install Blender" -ScriptBlock {
+            $Script:BlenderState.status = "SKIPPED"
+            Set-CurrentSetupStepSkipped -Id "locate-blender" -Name "Locate or install Blender" -Reason "User skipped Blender setup."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "locate-blender" -Status "SKIPPED") -eq 1) "Blender skip was not recorded as SKIPPED."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "locate-blender" -Status "OK") -eq 0) "Blender skip was incorrectly recorded as OK."
+        Assert-SelfTest ((Get-SelfTestSkipCount -Id "locate-blender" -Reason "User skipped Blender setup.") -eq 1) "Blender skip did not produce exactly one skip record."
+
+        Invoke-SetupStep -Id "step-addon-missing-source" -Name "Synthetic missing Blender add-on source" -ScriptBlock {
+            $Script:CurrentStepResultStatus = "FAILED"
+            $Script:CurrentStepResultReason = "StarBreaker Blender add-on source was not found."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-addon-missing-source" -Status "FAILED") -eq 1) "Missing Blender add-on source was not recorded as FAILED."
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-addon-missing-source" -Status "OK") -eq 0) "Missing Blender add-on source was incorrectly recorded as OK."
+
+        Invoke-SetupStep -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -ScriptBlock {
+            $Script:P4KState.status = "SKIPPED"
+            $Script:P4KState.skippedReason = "User skipped Data.p4k setup."
+            Set-CurrentSetupStepSkipped -Id "select-data-p4k" -Name "Select or copy Star Citizen Data.p4k" -Reason $Script:P4KState.skippedReason
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "select-data-p4k" -Status "SKIPPED") -eq 1) "Data.p4k user skip was not recorded as SKIPPED."
+        Assert-SelfTest ((Get-SelfTestSkipCount -Id "select-data-p4k" -Reason "User skipped Data.p4k setup.") -eq 1) "Data.p4k user skip did not produce exactly one skip record."
+
+        Invoke-SetupStep -Id "verify-sc-build" -Name "Verify Star Citizen build environment" -ScriptBlock { throw "dependency skip should prevent this block" }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "verify-sc-build" -Status "SKIPPED") -eq 1) "Dependency skip after Data.p4k user skip was not recorded as SKIPPED."
+
+        Invoke-SetupStep -Id "step-p4k-process-running" -Name "Synthetic process-running Data.p4k skip" -ScriptBlock {
+            Set-CurrentSetupStepSkipped -Id "step-p4k-process-running" -Name "Synthetic process-running Data.p4k skip" -Reason "Star Citizen or RSI Launcher process was running, so Data.p4k copy was skipped."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-p4k-process-running" -Status "SKIPPED") -eq 1) "Process-running Data.p4k copy block was not recorded as SKIPPED."
+
+        Invoke-SetupStep -Id "step-p4k-existing-retained" -Name "Synthetic retained Data.p4k destination skip" -ScriptBlock {
+            Set-CurrentSetupStepSkipped -Id "step-p4k-existing-retained" -Name "Synthetic retained Data.p4k destination skip" -Reason "Data.p4k copy was skipped because an existing destination was retained."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-p4k-existing-retained" -Status "SKIPPED") -eq 1) "Existing Data.p4k destination retained skip was not recorded as SKIPPED."
+
+        Invoke-SetupStep -Id "step-aurora-missing-p4k" -Name "Synthetic Aurora missing Data.p4k skip" -ScriptBlock {
+            Set-CurrentSetupStepSkipped -Id "step-aurora-missing-p4k" -Name "Synthetic Aurora missing Data.p4k skip" -Reason "Aurora example skipped because Data.p4k is not configured."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-aurora-missing-p4k" -Status "SKIPPED") -eq 1) "Aurora missing Data.p4k skip was not recorded as SKIPPED."
+
+        Invoke-SetupStep -Id "step-no-open-blender" -Name "Synthetic NoOpenBlenderAfterExport skip" -ScriptBlock {
+            Set-CurrentSetupStepSkipped -Id "step-no-open-blender" -Name "Synthetic NoOpenBlenderAfterExport skip" -Reason "Blender open skipped because NoOpenBlenderAfterExport was set."
+        }
+        Assert-SelfTest ((Get-SelfTestTimingCount -Id "step-no-open-blender" -Status "SKIPPED") -eq 1) "NoOpenBlenderAfterExport skip was not recorded as SKIPPED."
+
+        Invoke-SetupStep -Id "step-duplicate-skip" -Name "Synthetic duplicate skip" -ScriptBlock {
+            Add-SetupSkipRecord -Id "step-duplicate-skip" -Name "Synthetic duplicate skip" -Reason "duplicate skip reason"
+            Set-CurrentSetupStepSkipped -Id "step-duplicate-skip" -Name "Synthetic duplicate skip" -Reason "duplicate skip reason"
+        }
+        Assert-SelfTest ((Get-SelfTestSkipCount -Id "step-duplicate-skip" -Reason "duplicate skip reason") -eq 1) "Duplicate skip records were not avoided."
+
+        $state = Get-Content -LiteralPath $Script:SetupStatePath -Raw | ConvertFrom-Json
+        $stateReasons = @($state.skippedSteps | ForEach-Object { [string]$_.reason })
+        foreach ($expectedReason in @(
+            "User skipped Blender setup.",
+            "User skipped Data.p4k setup.",
+            "Star Citizen or RSI Launcher process was running, so Data.p4k copy was skipped.",
+            "Aurora example skipped because Data.p4k is not configured.",
+            "Blender open skipped because NoOpenBlenderAfterExport was set."
+        )) {
+            Assert-SelfTest ($stateReasons -contains $expectedReason) "Setup-state missing skip reason: $expectedReason"
+        }
+    } catch { Add-SelfTestError "User skip-state normalization self-test failed: $($_.Exception.Message)" }
+    finally {
+        $Script:SetupSteps = $oldSteps
+        $Script:SetupStepLookup = $oldLookup
+        $Script:StepTimings = $oldTimings
+        $Script:SetupSkips = $oldSkips
+        $Script:SetupFailures = $oldFailures
+        $Script:FatalFailure = $oldFatal
+        $Script:SetupStatePath = $oldSetupStatePath
+        $Script:CurrentStepId = $oldCurrentStepId
+        $Script:CurrentStepName = $oldCurrentStepName
+        $Script:CurrentStepNumber = $oldCurrentStepNumber
+        $Script:CurrentCompletedBefore = $oldCurrentCompletedBefore
+        $Script:BlenderState = $oldBlenderState
+        $Script:P4KState = $oldP4KState
         $Script:CurrentStepResultStatus = ""
         $Script:CurrentStepResultReason = ""
     }
