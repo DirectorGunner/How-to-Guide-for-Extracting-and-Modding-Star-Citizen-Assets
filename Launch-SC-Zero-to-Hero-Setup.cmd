@@ -209,37 +209,29 @@ if errorlevel 1 (
 )
 echo Starting animated intro...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%DG_INTRO_SCRIPT%" -LauncherPath "%DG_SELF%" -ChoiceFile "%DG_INTRO_CHOICE_FILE%" -MusicDefaultOn "%DG_MUSIC_ON%"
-if errorlevel 1 (
-    set "DG_ANIM_FALLBACK_REASON=intro process exited before drawing"
-    if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
-    if defined DG_INTRO_CHOICE_FILE del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
-    call :WriteAnimFallback
-    exit /b 1
-)
-if not exist "%DG_INTRO_CHOICE_FILE%" (
-    set "DG_ANIM_FALLBACK_REASON=intro left no choice file"
-    if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
-    call :WriteAnimFallback
-    exit /b 1
-)
-for /f "usebackq tokens=1,* delims==" %%A in ("%DG_INTRO_CHOICE_FILE%") do (
-    if /I "%%~A"=="CHOICE" set "DG_LAUNCH_KEY=%%~B"
-    if /I "%%~A"=="MUSIC" set "DG_MUSIC_ON=%%~B"
-    if /I "%%~A"=="ANIM" set "DG_ANIM_ON=%%~B"
-    if /I "%%~A"=="RESULT" set "DG_INTRO_RESULT=%%~B"
+set "DG_INTRO_EXIT=%ERRORLEVEL%"
+if exist "%DG_INTRO_CHOICE_FILE%" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("%DG_INTRO_CHOICE_FILE%") do (
+        if /I "%%~A"=="CHOICE" set "DG_LAUNCH_KEY=%%~B"
+        if /I "%%~A"=="MUSIC" set "DG_MUSIC_ON=%%~B"
+        if /I "%%~A"=="ANIM" set "DG_ANIM_ON=%%~B"
+        if /I "%%~A"=="RESULT" set "DG_INTRO_RESULT=%%~B"
+    )
 )
 if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
 if defined DG_INTRO_CHOICE_FILE del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
 if /I "%DG_LAUNCH_KEY%"=="Y" exit /b 0
 if /I "%DG_LAUNCH_KEY%"=="N" exit /b 0
 if /I "%DG_LAUNCH_KEY%"=="H" exit /b 0
+if not "%DG_INTRO_EXIT%"=="0" set "DG_ANIM_FALLBACK_REASON=intro process exited before returning a valid choice"
+if not defined DG_ANIM_FALLBACK_REASON set "DG_ANIM_FALLBACK_REASON=intro left no valid choice"
 set "DG_LAUNCH_KEY="
 call :MapAnimFallbackReason
 call :WriteAnimFallback
 exit /b 1
 
 :MapAnimFallbackReason
-set "DG_ANIM_FALLBACK_REASON=intro unavailable"
+if not defined DG_ANIM_FALLBACK_REASON set "DG_ANIM_FALLBACK_REASON=intro unavailable"
 if /I "%DG_INTRO_RESULT%"=="NO_CHOICE" set "DG_ANIM_FALLBACK_REASON=no selection"
 if /I "%DG_INTRO_RESULT%"=="INTRO_EXCEPTION" set "DG_ANIM_FALLBACK_REASON=intro drawing error"
 exit /b 0
@@ -40946,6 +40938,19 @@ function Write-WrappedDashboardNotice {
     }
 }
 
+function Write-P4KScanDashboardBlock {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return }
+
+    Write-Host ""
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $color = if ($line -match '^P4K SCAN STATUS:') { "Yellow" } else { "DarkYellow" }
+        Write-Host (Fit-ConsoleLine $line) -ForegroundColor $color
+    }
+    Write-Host ""
+}
+
 function Write-ActiveCommandDashboard {
     param(
         [string]$CommandDisplay,
@@ -41007,13 +41012,22 @@ function Write-ActiveCommandDashboard {
     Write-Host (Fit-ConsoleLine ("ACTIVE COMMAND {0}  elapsed {1}  last log write: {2}" -f $Spinner, $elapsedText, $lastLog)) -ForegroundColor $statusColor
     Write-Host (Fit-ConsoleLine ("COMMAND: {0}" -f $CommandDisplay)) -ForegroundColor White
     Write-Host (Fit-ConsoleLine ("OUTPUT LOG: {0}" -f $LogPath)) -ForegroundColor DarkGray
+    $p4kDashboardNote = ""
+    if ($ActivityNote -match '(?m)^P4K SCAN STATUS: still working') {
+        $p4kDashboardNote = $ActivityNote
+    } elseif (Test-P4KQuietScanCommand -StepId ([string]$Script:CurrentStepId + " " + [string]$Script:CurrentStepName) -CommandDisplay ([string]$CommandDisplay + " " + [string]$ActivityNote)) {
+        $p4kDashboardNote = Get-P4KQuietScanHeartbeatNote -BaseNote $ActivityNote -LogPath $LogPath -Elapsed $Elapsed -CommandDisplay $CommandDisplay
+    }
+    if (-not [string]::IsNullOrWhiteSpace($p4kDashboardNote)) {
+        Write-P4KScanDashboardBlock -Text $p4kDashboardNote
+    }
     $extraStatusLines = @(Get-ActivityExtraStatus -CommandDisplay $CommandDisplay -LogPath $LogPath)
     foreach ($extraStatusLine in $extraStatusLines) {
         if (-not [string]::IsNullOrWhiteSpace($extraStatusLine)) {
             Write-Host (Fit-ConsoleLine ("WATCH: {0}" -f $extraStatusLine)) -ForegroundColor DarkYellow
         }
     }
-    if (-not [string]::IsNullOrWhiteSpace($ActivityNote)) {
+    if ([string]::IsNullOrWhiteSpace($p4kDashboardNote) -and -not [string]::IsNullOrWhiteSpace($ActivityNote)) {
         Write-WrappedDashboardNotice -Label "NOTE" -Text $ActivityNote -ForegroundColor Yellow
     }
     # v11: Pair the "do not close" line with a graceful-abort hint. Users who
@@ -46593,6 +46607,8 @@ if not exist "%SC_AURORA_SCENE_BLEND%" (
 )
 echo Opening Aurora scene.blend directly for visual review.
 echo In Blender: press N in the 3D View, open the StarBreaker tab, and select the package root if controls are missing.
+echo Texture note: use the top-right viewport shading sphere icons to switch to Material Preview or Rendered.
+echo Solid mode may not show the textured look.
 echo Black wire/curve helper data is not necessarily a failed import.
 start "" /D "%SC_AURORA_SCENE_BLEND_DIR%" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%"
 exit /b 0
@@ -47788,6 +47804,7 @@ function Show-SetupOutcomeSummary {
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.helperLog)) { Write-Host ("    Helper log: " + [string]$Script:AuroraImportState.helperLog) -ForegroundColor DarkGray }
         Write-Host "    Background Blender audit: geometry/material/metadata/add-on validation." -ForegroundColor DarkCyan
         Write-Host "    GUI visual review: open scene.blend with the safe launcher; press N in the 3D View and choose the StarBreaker tab." -ForegroundColor DarkCyan
+        Write-Host "    Texture view: use the top-right viewport shading sphere icons for Material Preview or Rendered; Solid mode may not show textures." -ForegroundColor DarkCyan
         Write-Host "    If the StarBreaker UI is missing, select the package root and run the add-on repair command under scdata\\work if needed." -ForegroundColor DarkCyan
     }
 
@@ -48148,8 +48165,14 @@ function Invoke-SelfTest {
             $musicStartAfterFrame = if ($firstFrameRender -ge 0) { $introAnimationPayload.IndexOf('Start-IntroMusic', $firstFrameRender) } else { -1 }
             Assert-SelfTest ($firstFrameMarker -ge 0 -and $firstFrameRender -gt $firstFrameMarker -and $musicStartAfterFrame -gt $firstFrameRender) "Foreground intro did not render frame 0 before starting music."
             Assert-SelfTest ($introAnimationPayload.Contains("function Get-EmbeddedIntroMusicBase64") -and $introAnimationPayload.Contains("[IO.File]::WriteAllBytes(`$Script:TempMusicPath") -and $introAnimationPayload.Contains("New-Object System.Windows.Media.MediaPlayer")) "Intro music decode/write/open logic was not in-process."
-            Assert-SelfTest ($launcherText.Contains('if not exist "%DG_INTRO_CHOICE_FILE%"') -and $launcherText.Contains('set "DG_LAUNCH_KEY="') -and $launcherText.Contains('exit /b 1')) "RunIntroAnimation did not make missing/blank/unsupported choices fall back."
+            Assert-SelfTest ($launcherText.Contains('if exist "%DG_INTRO_CHOICE_FILE%"') -and $launcherText.Contains('set "DG_LAUNCH_KEY="') -and $launcherText.Contains('exit /b 1')) "RunIntroAnimation did not make missing/blank/unsupported choices fall back."
+            $introExitCaptureIndex = $launcherText.IndexOf('set "DG_INTRO_EXIT=%ERRORLEVEL%"')
+            $introChoiceParseIndex = if ($introExitCaptureIndex -ge 0) { $launcherText.IndexOf('if exist "%DG_INTRO_CHOICE_FILE%"', $introExitCaptureIndex) } else { -1 }
+            $introYAcceptIndex = if ($introChoiceParseIndex -ge 0) { $launcherText.IndexOf('if /I "%DG_LAUNCH_KEY%"=="Y" exit /b 0', $introChoiceParseIndex) } else { -1 }
+            $introFallbackReasonIndex = if ($introYAcceptIndex -ge 0) { $launcherText.IndexOf('set "DG_ANIM_FALLBACK_REASON=intro process exited before returning a valid choice"', $introYAcceptIndex) } else { -1 }
+            Assert-SelfTest ($introExitCaptureIndex -ge 0 -and $introChoiceParseIndex -gt $introExitCaptureIndex -and $introYAcceptIndex -gt $introChoiceParseIndex -and $introFallbackReasonIndex -gt $introYAcceptIndex) "RunIntroAnimation did not make an explicit HINTRO CHOICE=Y authoritative before process-exit fallback."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y"') -and $launcherText.Contains("goto :ChooseInstallRoot")) "Normal Y handoff did not go directly to install-root selection."
+            Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y" exit /b 0') -and $launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y" (') -and $launcherText.Contains('goto :ChooseInstallRoot')) "Explicit HINTRO Y did not route directly to root selection without the static prompt."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="N"') -and $launcherText.Contains("goto :Cancelled")) "Explicit N cancel path was missing."
             Assert-SelfTest ($launcherText.Contains("DG_SUPPRESS_FINISHED_MESSAGE") -and $launcherText.Contains('if "%DG_SUPPRESS_FINISHED_MESSAGE%"=="1" exit /b %DG_EXIT%')) "Normal handoff exit-code message suppression was missing."
             Assert-SelfTest ($launcherText.Contains(":Cancelled") -and $launcherText.Contains("cls") -and $launcherText.Contains("Setup cancelled. No changes were made.")) "Cancel screen was not redrawn cleanly."
@@ -48162,11 +48185,17 @@ function Invoke-SelfTest {
             Assert-SelfTest (-not $launcherText.Contains(("space.shading.type = '" + "RENDERED'"))) "Blender GUI helper still forced Rendered viewport directly."
             Assert-SelfTest ($launcherText.Contains("bpy.app.timers.register(make_callback(label), first_interval=delay)")) "Blender GUI helper did not schedule deferred timer retries."
             Assert-SelfTest ($launcherText.Contains("('deferred-0.50s', 0.5)") -and $launcherText.Contains("('deferred-1.50s', 1.5)") -and $launcherText.Contains("('deferred-3.00s', 3.0)")) "Blender GUI helper deferred retry timings were missing."
-            Assert-SelfTest ($launcherText.Contains("P4K SCAN STATUS: still working") -and $launcherText.Contains("StarBreaker can be quiet while indexing/searching Data.p4k.") -and $launcherText.Contains("Last log write age:") -and $launcherText.Contains("Current command target/filter/entity:") -and $launcherText.Contains("To abort cleanly, press Ctrl+C")) "P4K quiet-scan heartbeat block text was missing."
+            Assert-SelfTest ($launcherText.Contains("P4K SCAN STATUS: still working") -and $launcherText.Contains("StarBreaker can be quiet while indexing/searching Data.p4k.") -and $launcherText.Contains("Elapsed:") -and $launcherText.Contains("Last log write:") -and $launcherText.Contains("Output log:") -and $launcherText.Contains("Target/filter:") -and $launcherText.Contains("Do not close this window. To abort cleanly, press Ctrl+C.")) "P4K quiet-scan heartbeat block text was missing."
             Assert-SelfTest (-not $launcherText.Contains(('if ($Elapsed.TotalSeconds -lt 20)' + ' { return $BaseNote }'))) "P4K heartbeat still waited behind the old quiet threshold."
             Assert-SelfTest ($launcherText.Contains("function Test-P4KQuietScanCommand") -and $launcherText.Contains("starbreaker\b.*\bp4k") -and $launcherText.Contains("p4k\s+list") -and $launcherText.Contains("Data\.p4k") -and $launcherText.Contains("--p4k") -and $launcherText.Contains("entity\s+loadout") -and $launcherText.Contains("entity\s+export") -and $launcherText.Contains("RSI_Aurora")) "P4K quiet-scan detection did not cover p4k list/Data.p4k/--p4k/entity loadout/export/Aurora contexts."
+            $liveP4KCommand = 'C:\dev\starcitizen\StarBreaker\target\release\starbreaker.exe p4k list --filter Data/Objects/Spaceships/Ships/'
+            $liveP4KNote = Get-P4KQuietScanHeartbeatNote -LogPath 'D:\dev\scdata\work\p4k_live.log' -Elapsed ([TimeSpan]::FromSeconds(6)) -CommandDisplay $liveP4KCommand
+            Assert-SelfTest (Test-P4KQuietScanCommand -CommandDisplay $liveP4KCommand) "Exact live p4k list command was not detected as a P4K scan."
+            Assert-SelfTest ($liveP4KNote.Contains("P4K SCAN STATUS: still working") -and $liveP4KNote.Contains("StarBreaker can be quiet") -and $liveP4KNote.Contains("Output log: D:\dev\scdata\work\p4k_live.log") -and $liveP4KNote.Contains("Target/filter: filter: Data/Objects/Spaceships/Ships/")) "Synthetic P4K heartbeat note did not render the required visible block for the exact live command."
+            Assert-SelfTest ($launcherText.Contains("Write-P4KScanDashboardBlock -Text `$p4kDashboardNote") -and $launcherText.Contains('Test-P4KQuietScanCommand -StepId ([string]$Script:CurrentStepId') -and $launcherText.Contains('Get-P4KQuietScanHeartbeatNote -BaseNote $ActivityNote')) "Write-ActiveCommandDashboard did not promote detected P4K scans into the visible dashboard block."
             Assert-SelfTest ($launcherText.Contains("function Enable-StarBreakerBlenderAddonPreference") -and $launcherText.Contains("addon_utils.modules(refresh=True)") -and $launcherText.Contains("bpy.ops.preferences.addon_enable(module=MODULE)") -and $launcherText.Contains("addon_utils.enable(MODULE, default_set=True, persistent=True)") -and $launcherText.Contains("bpy.ops.wm.save_userpref()") -and $launcherText.Contains("MODULE in bpy.context.preferences.addons") -and $launcherText.Contains("addon_utils.check(MODULE)") -and $launcherText.Contains('SC_REPAIR_MODE = "verify"') -and $launcherText.Contains("Repair-StarBreaker-Blender-Addon.cmd")) "StarBreaker Blender add-on persistent preference enable/repair/fresh-verify code was missing."
             Assert-SelfTest ($launcherText.Contains('Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @($sceneBlend)')) "Default Aurora GUI auto-open no longer uses direct scene.blend launch."
+            Assert-SelfTest ($launcherText.Contains("Texture note: use the top-right viewport shading sphere icons") -and $launcherText.Contains("Solid mode may not show the textured look.") -and $launcherText.Contains("Texture view: use the top-right viewport shading sphere icons for Material Preview or Rendered")) "Blender texture-view user guidance was missing from the generated launcher or final summary."
             Assert-SelfTest ($launcherText.Contains("InteractiveHiddenPreviewCelebration") -and $launcherText.Contains("-InteractiveHiddenPreviewCelebration")) "Interactive hidden-H celebration flag/path was missing."
             Assert-SelfTest ($launcherText.Contains("CONGRATS, YOU DID IT!") -and $launcherText.Contains("Now make some amazing things, Hero.") -and $launcherText.Contains("DG-42") -and $launcherText.Contains("THE ANTI-SLICER SCRIPT") -and $launcherText.Contains("GO MAKE SOMETHING AMAZING!")) "Success celebration required text was missing."
             Assert-SelfTest (-not $launcherText.Contains(("GO MAKE THE " + "UNREASONABLE"))) "Success celebration contained the rejected status text."
@@ -49340,17 +49369,18 @@ function Get-P4KQuietScanHeartbeatNote {
 
     $elapsedText = ("{0:00}:{1:00}:{2:00}" -f [int]$Elapsed.TotalHours, $Elapsed.Minutes, $Elapsed.Seconds)
     $target = Get-P4KQuietScanTargetSummary -Arguments $Arguments
+    if ([string]::IsNullOrWhiteSpace($target) -and $CommandDisplay -match '(?i)--filter\s+"?([^"\s]+)"?') { $target = "filter: " + [string]$matches[1] }
+    if ([string]::IsNullOrWhiteSpace($target) -and $CommandDisplay -match '(?i)\bentity\s+(loadout|export)\s+"?([^"\s]+)"?') { $target = "entity " + ([string]$matches[1]).ToLowerInvariant() + ": " + [string]$matches[2] }
     if ([string]::IsNullOrWhiteSpace($target) -and $CommandDisplay -match '(?i)\b(RSI_Aurora_MR[0-9A-Za-z_]*)\b') { $target = "entity target: " + [string]$matches[1] }
     if ([string]::IsNullOrWhiteSpace($target)) { $target = "not specified" }
     return @"
 P4K SCAN STATUS: still working
 StarBreaker can be quiet while indexing/searching Data.p4k.
-Elapsed time: $elapsedText
-Last log write age: $lastAge
-Output log path: $LogPath
-Current command target/filter/entity: $target
-Do not close this window.
-To abort cleanly, press Ctrl+C. A log of progress so far will still be saved.
+Elapsed: $elapsedText
+Last log write: $lastAge
+Output log: $LogPath
+Target/filter: $target
+Do not close this window. To abort cleanly, press Ctrl+C.
 "@.Trim()
 }
 
