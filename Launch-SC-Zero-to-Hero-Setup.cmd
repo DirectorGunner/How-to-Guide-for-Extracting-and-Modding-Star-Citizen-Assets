@@ -44051,6 +44051,38 @@ function Sync-Repositories {
     foreach ($repo in $repos) { Clone-RepositoryIfNeeded -Name $repo.Name -Url $repo.Url }
 
     Write-Host "Optional offline/private repos scdatatools and qtvscodestyle are not cloned automatically; existing local folders are validated later if present." -ForegroundColor DarkCyan
+    Ensure-OptionalPrivateRepoPlaceholders
+}
+
+function Ensure-OptionalPrivateRepoPlaceholders {
+    foreach ($name in @("scdatatools", "qtvscodestyle")) {
+        $path = Join-Path $StarCitizenRoot $name
+        if ($DryRun) {
+            Write-Host ("[dry-run] Would ensure optional private/offline placeholder folder: {0}" -f $path) -ForegroundColor DarkCyan
+            continue
+        }
+        Assert-HarnessPathAllowed -Path $path -Purpose "optional private/offline placeholder folder"
+        Ensure-Directory $path
+        $placeholder = Join-Path $path "README.placeholder.md"
+        $readme = Join-Path $path "README.md"
+        $hasUserFiles = $false
+        try {
+            $userFiles = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -notin @(".", "..", ".git", "README.placeholder.md", ".gitkeep")
+            } | Select-Object -First 1)
+            $hasUserFiles = ($userFiles.Count -gt 0)
+        } catch { $hasUserFiles = $true }
+        if ((-not $hasUserFiles) -and (-not (Test-Path -LiteralPath $readme)) -and (-not (Test-Path -LiteralPath $placeholder))) {
+            $text = @"
+# Optional private/offline source placeholder: $name
+
+This folder is reserved for optional private/offline/community source that the installer does not clone automatically because the upstream/source is not generally available.
+
+Users with access can place the source here. It is safe for this folder to remain empty.
+"@
+            Write-InstallerFile -Path $placeholder -Text $text
+        }
+    }
 }
 
 function Sync-GuideRepository {
@@ -44157,6 +44189,8 @@ function Initialize-PrivateRepoIfUseful {
 
     $files = Get-ChildItem $Path -Force | Where-Object { $_.Name -ne ".git" } | Select-Object -First 1
     if ($null -eq $files) { Write-Host "Private placeholder folder is empty; not initializing Git: $Path"; return $false }
+    $realFiles = Get-ChildItem $Path -Force | Where-Object { $_.Name -notin @(".git", "README.placeholder.md", ".gitkeep") } | Select-Object -First 1
+    if ($null -eq $realFiles) { Write-Host "Private placeholder folder has only installer placeholder files; not initializing Git: $Path"; return $false }
 
     Run-Native -Exe "git" -Arguments @("init", "-b", $InitialBranch) -IgnoreExitCode -WorkingDirectory $Path
     if (-not (Test-Path (Join-Path $Path ".git"))) { Run-Native -Exe "git" -Arguments @("init") -WorkingDirectory $Path }
@@ -44166,10 +44200,12 @@ function Initialize-PrivateRepoIfUseful {
 
 function Get-OptionalPrivateRepoSkipReason {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return "Optional private/offline source folder is missing; skipped without failure." }
+    if (-not (Test-Path -LiteralPath $Path)) { return "Optional private/offline source placeholder folder has not been created yet; skipped without failure." }
     try {
         $files = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".git" } | Select-Object -First 1)
-        if ($files.Count -eq 0) { return "Optional private/offline source folder is empty; placeholder skipped without failure." }
+        if ($files.Count -eq 0) { return "Optional private/offline source placeholder is empty; users with access can place source here." }
+        $nonPlaceholder = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @(".git", "README.placeholder.md", ".gitkeep") } | Select-Object -First 1)
+        if ($nonPlaceholder.Count -eq 0) { return "Optional private/offline source placeholder exists; users with access can place source here." }
     } catch { return "Optional private/offline source folder could not be inspected safely; skipped." }
     if (-not (Test-InstallerPathUnderRoot -Path $Path -Root $StarCitizenRoot)) { return "Optional private repo path is outside StarCitizenRoot; skipped for safety." }
     return "Optional private/offline repo was not initialized; review local files manually."
@@ -44225,7 +44261,7 @@ function Initialize-WorkspaceControlGitRepo {
             $result.Status = if ($gitignoreChanged -or $result.IdentityFallbackWritten -or $result.Dirty) { "WARN" } else { "OK" }
             if ($gitignoreChanged) { $result.Reason = (($result.Reason + " Protective workspace-control .gitignore was written.").Trim()) }
             if ($result.IdentityFallbackWritten) { $result.Reason = (($result.Reason + " Repo-local fallback Git identity was written.").Trim()) }
-            if ($result.Dirty) { $result.Reason = (($result.Reason + " Workspace-control files are uncommitted for review.").Trim()) }
+            if ($result.Dirty) { $result.Reason = (($result.Reason + " Workspace-control generated files are uncommitted and awaiting user review; the installer does not auto-stage or auto-commit them.").Trim()) }
             if ([string]::IsNullOrWhiteSpace($result.Reason)) { $result.Reason = "Workspace-control repo is ready." }
         }
     } catch {
@@ -44240,6 +44276,7 @@ function Initialize-WorkspaceControlGitRepo {
 
 function Create-SafeBranches {
     Write-Step "Creating safe development branches"
+    Ensure-OptionalPrivateRepoPlaceholders
     Ensure-GitBranch -RepoName "StarBreaker" -Path (Join-Path $StarCitizenRoot "StarBreaker") -Branch "dev-mcp-blender-workflow" -Role "tool" -SwitchBranch:$CreateBranches
     Ensure-GitBranch -RepoName "Blender-Tools" -Path (Join-Path $StarCitizenRoot "Blender-Tools") -Branch "dev-direct-p4k-workflow" -Role "tool" -SwitchBranch:$CreateBranches
     Ensure-GitBranch -RepoName "unp4k" -Path (Join-Path $StarCitizenRoot "unp4k") -Branch "dev-direct-p4k-workflow" -Role "tool" -SwitchBranch:$CreateBranches
@@ -44251,14 +44288,14 @@ function Create-SafeBranches {
         Ensure-GitBranch -RepoName "scdatatools" -Path $scdataToolsPath -Branch "dev-private-review" -Role "private" -SwitchBranch:$CreateBranches
     } else {
         $Script:BranchStates.Add([pscustomobject](New-GitVersioningResult -Repo "scdatatools" -Role "private" -Path $scdataToolsPath -Branch "dev-private-review")) | Out-Null
-        $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED"
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED_PLACEHOLDER"
         $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = Get-OptionalPrivateRepoSkipReason -Path $scdataToolsPath
     }
     if (Initialize-PrivateRepoIfUseful -Path $qtStylePath -InitialBranch "dev-private-review") {
         Ensure-GitBranch -RepoName "qtvscodestyle" -Path $qtStylePath -Branch "dev-private-review" -Role "private" -SwitchBranch:$CreateBranches
     } else {
         $Script:BranchStates.Add([pscustomobject](New-GitVersioningResult -Repo "qtvscodestyle" -Role "private" -Path $qtStylePath -Branch "dev-private-review")) | Out-Null
-        $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED"
+        $Script:BranchStates[$Script:BranchStates.Count - 1].Status = "SKIPPED_PLACEHOLDER"
         $Script:BranchStates[$Script:BranchStates.Count - 1].Reason = Get-OptionalPrivateRepoSkipReason -Path $qtStylePath
     }
     $guidePath = if (-not [string]::IsNullOrWhiteSpace($Script:TutorialRepoState.path)) { $Script:TutorialRepoState.path } else { $GuideRepoPath }
@@ -44287,7 +44324,7 @@ function Initialize-GitVersioning {
     Create-SafeBranches
 
     $failed = @($Script:BranchStates | Where-Object { ([string]$_.Status) -match '^(FAIL|FAILED|FATAL)$' })
-    $warned = @($Script:BranchStates | Where-Object { ([string]$_.Status) -eq 'WARN' -or ([string]$_.Status) -eq 'SKIPPED' })
+    $warned = @($Script:BranchStates | Where-Object { ([string]$_.Status) -eq 'WARN' -or ([string]$_.Status) -eq 'SKIPPED' -or ([string]$_.Status) -eq 'SKIPPED_PLACEHOLDER' })
     if ($failed.Count -gt 0) {
         $Script:CurrentStepResultStatus = "FAILED"
         $Script:CurrentStepResultReason = "One or more Git versioning or branch operations failed."
@@ -44621,12 +44658,22 @@ function Write-VSCodeWorkspace {
 
     $dev = To-ForwardSlashPath $DevRoot
     $starRoot = To-ForwardSlashPath $StarCitizenRoot
-    $vsDevShell = To-ForwardSlashPath (Get-VsDevShellPath)
     $pythonVenv = To-ForwardSlashPath (Join-Path $PythonVenvDir "Scripts\python.exe")
+    $devShellCommand = @(
+        '$devRoot=(Resolve-Path ''${workspaceFolder:Star Citizen Orchestration}/..'').Path'
+        '$starcitizenRoot=(Resolve-Path ''${workspaceFolder:Star Citizen Orchestration}'').Path'
+        '$dotnetRoot=Join-Path $devRoot ''dotnet'''
+        '$pythonActivate=Join-Path $devRoot ''Python/venvs/scdev/Scripts/Activate.ps1'''
+        '$env:DOTNET_ROOT=$dotnetRoot'
+        '$env:PATH=$dotnetRoot + '';'' + $env:PATH'
+        'if (Test-Path ''C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/Tools/Launch-VsDevShell.ps1'') { & ''C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/Tools/Launch-VsDevShell.ps1'' -Arch amd64 -HostArch amd64 } else { Write-Warning ''Visual Studio Build Tools Developer PowerShell was not found.'' }'
+        'if (Test-Path $pythonActivate) { & $pythonActivate } else { Write-Warning (''Project Python venv activation script was not found: '' + $pythonActivate) }'
+        'Set-Location $starcitizenRoot'
+    ) -join '; '
 
     $folders = New-Object 'System.Collections.Generic.List[object]'
     foreach ($folder in @(
-        @{ name = "Star Citizen Workspace Control"; path = $starRoot },
+        @{ name = "Star Citizen Orchestration"; path = $starRoot },
         @{ name = "Prompt Archive"; path = (To-ForwardSlashPath $AgentPromptsRoot) },
         @{ name = "Agent Work Logs"; path = (To-ForwardSlashPath $AgentWorkRoot) },
         @{ name = "Output Reports"; path = (To-ForwardSlashPath $AgentReportsRoot) },
@@ -44673,13 +44720,14 @@ function Write-VSCodeWorkspace {
             "terminal.integrated.defaultProfile.windows" = "Developer PowerShell for VS 2022"
             "terminal.integrated.profiles.windows" = [ordered]@{
                 "Developer PowerShell for VS 2022" = [ordered]@{
-                    source = "PowerShell"
-                    args = @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "& '$vsDevShell' -Arch amd64")
+                    path = "powershell.exe"
+                    args = @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $devShellCommand)
                 }
                 PowerShell = [ordered]@{ source = "PowerShell" }
             }
             "terminal.integrated.env.windows" = $terminalEnv
             "python.defaultInterpreterPath" = $pythonVenv
+            "python.terminal.activateEnvironment" = $false
             "files.exclude" = [ordered]@{
                 "**/target" = $true
                 "**/bin" = $true
@@ -44869,6 +44917,178 @@ function Resolve-StarBreakerAddonSource {
     return $null
 }
 
+function Write-StarBreakerBlenderAddonRepairCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$BlenderExe,
+        [Parameter(Mandatory=$true)][string]$HelperScript,
+        [Parameter(Mandatory=$true)][string]$LogPath
+    )
+    Ensure-Directory $ScWorkRoot
+    $cmdPath = Join-Path $ScWorkRoot "Repair-StarBreaker-Blender-Addon.cmd"
+    $stdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stdout.log"
+    $stderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stderr.log"
+    $content = @"
+@echo off
+setlocal
+set "SC_BLENDER_EXE=$BlenderExe"
+set "SC_REPAIR_SCRIPT=$HelperScript"
+set "SC_REPAIR_LOG=$LogPath"
+set "SC_REPAIR_STDOUT=$stdoutPath"
+set "SC_REPAIR_STDERR=$stderrPath"
+if not exist "%SC_BLENDER_EXE%" (
+  echo Blender executable was not found:
+  echo   %SC_BLENDER_EXE%
+  exit /b 1
+)
+if not exist "%SC_REPAIR_SCRIPT%" (
+  echo StarBreaker add-on repair script was not found:
+  echo   %SC_REPAIR_SCRIPT%
+  exit /b 1
+)
+"%SC_BLENDER_EXE%" --background --python "%SC_REPAIR_SCRIPT%" > "%SC_REPAIR_STDOUT%" 2> "%SC_REPAIR_STDERR%"
+set "SC_REPAIR_EXIT=%ERRORLEVEL%"
+if not "%SC_REPAIR_EXIT%"=="0" (
+  echo StarBreaker Blender add-on repair failed with exit code %SC_REPAIR_EXIT%.
+  echo Log:
+  echo   %SC_REPAIR_LOG%
+  echo Stdout:
+  echo   %SC_REPAIR_STDOUT%
+  echo Stderr:
+  echo   %SC_REPAIR_STDERR%
+  exit /b %SC_REPAIR_EXIT%
+)
+echo StarBreaker Blender add-on repair completed.
+echo Log:
+echo   %SC_REPAIR_LOG%
+exit /b 0
+"@
+    Write-InstallerFile -Path $cmdPath -Text $content
+    return $cmdPath
+}
+
+function Enable-StarBreakerBlenderAddonPreference {
+    param([Parameter(Mandatory=$true)][string]$AddonDestination)
+    $result = [ordered]@{
+        Status = "WARN"
+        Reason = ""
+        RepairCommand = ""
+        LogPath = ""
+        StdoutLog = ""
+        StderrLog = ""
+    }
+    try {
+        Ensure-Directory $ScWorkRoot
+        $blenderExe = [string]$Script:BlenderState.exe
+        $helperPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.py"
+        $logPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.log"
+        $stdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stdout.log"
+        $stderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stderr.log"
+        $result.LogPath = $logPath
+        $result.StdoutLog = $stdoutPath
+        $result.StderrLog = $stderrPath
+
+        $py = @'
+import os
+import traceback
+
+MODULE = 'starbreaker_addon'
+log_path = os.environ.get('SC_REPAIR_LOG', '')
+
+
+def log(msg):
+    line = '[SC-StarBreaker-addon-repair] ' + str(msg)
+    print(line)
+    if log_path:
+        try:
+            with open(log_path, 'a', encoding='utf-8') as handle:
+                handle.write(line + '\n')
+        except Exception:
+            pass
+
+
+try:
+    import bpy
+    import addon_utils
+
+    log('Blender version=' + bpy.app.version_string)
+    log('Blender user scripts=' + str(bpy.utils.user_resource('SCRIPTS')))
+    method = ''
+    try:
+        bpy.ops.preferences.addon_enable(module=MODULE)
+        method = 'bpy.ops.preferences.addon_enable'
+        log('Enabled add-on using bpy.ops.preferences.addon_enable(module=MODULE).')
+    except Exception as exc:
+        log('bpy.ops.preferences.addon_enable failed: ' + str(exc))
+        addon_utils.enable(MODULE, default_set=True, persistent=True)
+        method = 'addon_utils.enable(default_set=True,persistent=True)'
+        log('Enabled add-on using addon_utils.enable(MODULE, default_set=True, persistent=True).')
+
+    enabled = False
+    try:
+        default_enabled, loaded = addon_utils.check(MODULE)
+        enabled = bool(default_enabled or loaded)
+        log('addon_utils.check default_enabled=' + str(default_enabled) + ' loaded=' + str(loaded))
+    except Exception as exc:
+        log('addon_utils.check failed: ' + str(exc))
+
+    try:
+        bpy.ops.wm.save_userpref()
+        log('Saved Blender user preferences with bpy.ops.wm.save_userpref().')
+    except Exception as exc:
+        log('bpy.ops.wm.save_userpref failed: ' + str(exc))
+        raise
+
+    if not enabled:
+        raise RuntimeError('starbreaker_addon was not confirmed enabled after ' + method)
+
+    log('STATUS=OK')
+except Exception as exc:
+    log('STATUS=FAILED')
+    log('ERROR=' + str(exc))
+    try:
+        log(traceback.format_exc())
+    except Exception:
+        pass
+    raise
+'@
+        Write-InstallerFile -Path $helperPath -Text $py
+        $repairCommand = Write-StarBreakerBlenderAddonRepairCommand -BlenderExe $blenderExe -HelperScript $helperPath -LogPath $logPath
+        $result.RepairCommand = $repairCommand
+
+        if ([string]::IsNullOrWhiteSpace($blenderExe) -or -not (Test-Path -LiteralPath $blenderExe)) {
+            $result.Status = "WARN"
+            $result.Reason = "Blender executable is unavailable; generated add-on repair command for later use."
+            return [pscustomobject]$result
+        }
+        if ([string]::IsNullOrWhiteSpace($AddonDestination) -or -not (Test-Path -LiteralPath (Join-Path $AddonDestination "__init__.py"))) {
+            $result.Status = "WARN"
+            $result.Reason = "StarBreaker add-on link is not ready; persistent Blender preference enablement was skipped."
+            return [pscustomobject]$result
+        }
+        if (Test-NonLiveInstallerMode -or $Script:NoExternalActions) {
+            $result.Status = "SKIPPED"
+            $result.Reason = "Persistent Blender preference enablement is skipped in non-live validation mode; repair command generated."
+            return [pscustomobject]$result
+        }
+
+        Assert-InstallerExternalCommandAllowed -Exe $blenderExe -Arguments @("--background", "--python", $helperPath)
+        Remove-Item -LiteralPath $logPath,$stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+        $proc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", "--python", $helperPath) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -Wait -PassThru
+        if ($null -ne $proc -and [int]$proc.ExitCode -eq 0) {
+            $result.Status = "OK"
+            $result.Reason = "StarBreaker Blender add-on was enabled persistently in Blender user preferences."
+        } else {
+            $exitCode = if ($null -ne $proc) { [int]$proc.ExitCode } else { 9999 }
+            $result.Status = "WARN"
+            $result.Reason = "Blender background preference enablement returned exit code $exitCode; use the generated repair command after setup."
+        }
+    } catch {
+        $result.Status = "WARN"
+        $result.Reason = "Blender add-on preference enablement failed softly: $($_.Exception.Message)"
+    }
+    return [pscustomobject]$result
+}
+
 function Install-StarBreakerBlenderAddon {
     Write-Step "Linking StarBreaker Blender add-on"
     if ($SkipBlender) {
@@ -45002,7 +45222,19 @@ function Install-StarBreakerBlenderAddon {
         }
         Write-Host "StarBreaker add-on linked: $dst" -ForegroundColor Green
         Write-Host "Link type: $($Script:BlenderState.addonLinkType); __init__.py reachable through link." -ForegroundColor DarkGreen
-        Write-Host "Open Blender: Edit -> Preferences -> Add-ons -> search StarBreaker -> enable the add-on." -ForegroundColor Cyan
+        $prefResult = Enable-StarBreakerBlenderAddonPreference -AddonDestination $dst
+        if ([string]$prefResult.Status -eq "OK") {
+            Write-Host "StarBreaker add-on was enabled persistently in Blender preferences." -ForegroundColor Green
+        } elseif ([string]$prefResult.Status -eq "SKIPPED") {
+            Write-Warning ([string]$prefResult.Reason)
+        } else {
+            Write-Warning ([string]$prefResult.Reason)
+            $Script:CurrentStepResultStatus = "WARN"
+            $Script:CurrentStepResultReason = [string]$prefResult.Reason
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$prefResult.RepairCommand)) {
+            Write-Host ("StarBreaker add-on repair command: {0}" -f [string]$prefResult.RepairCommand) -ForegroundColor Cyan
+        }
     } else {
         $Script:CurrentStepResultStatus = "SKIPPED"
         $Script:CurrentStepResultReason = "Add-on was not linked."
@@ -46223,14 +46455,47 @@ function Write-AuroraSceneBlendLauncher {
         [Parameter(Mandatory=$true)][string]$HelperScript
     )
     $launcherPath = Join-Path $ScWorkRoot "Open-Aurora-MR-in-Blender.cmd"
+    $debugLauncherPath = Join-Path $ScWorkRoot "Open-Aurora-MR-in-Blender-with-helper.cmd"
     $guiLog = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend_gui.log"
+    $resolvedBlender = try { if (Test-Path -LiteralPath $BlenderExe) { (Resolve-Path -LiteralPath $BlenderExe).Path } else { $BlenderExe } } catch { $BlenderExe }
+    $resolvedSceneBlend = try { if (Test-Path -LiteralPath $SceneBlend) { (Resolve-Path -LiteralPath $SceneBlend).Path } else { $SceneBlend } } catch { $SceneBlend }
+    $resolvedSceneJson = try { if (Test-Path -LiteralPath $SceneJson) { (Resolve-Path -LiteralPath $SceneJson).Path } else { $SceneJson } } catch { $SceneJson }
+    $resolvedHelper = try { if (Test-Path -LiteralPath $HelperScript) { (Resolve-Path -LiteralPath $HelperScript).Path } else { $HelperScript } } catch { $HelperScript }
+    $sceneBlendDir = try { Split-Path -LiteralPath $resolvedSceneBlend -Parent } catch { "" }
+    if ([string]::IsNullOrWhiteSpace($sceneBlendDir)) { $sceneBlendDir = $ScWorkRoot }
     $content = @"
 @echo off
 setlocal
-set "SC_AURORA_BLENDER_EXE=$BlenderExe"
-set "SC_AURORA_SCENE_BLEND=$SceneBlend"
-set "SC_AURORA_SCENE_JSON=$SceneJson"
-set "SC_AURORA_HELPER_SCRIPT=$HelperScript"
+set "SC_AURORA_BLENDER_EXE=$resolvedBlender"
+set "SC_AURORA_SCENE_BLEND=$resolvedSceneBlend"
+set "SC_AURORA_SCENE_BLEND_DIR=$sceneBlendDir"
+if not exist "%SC_AURORA_BLENDER_EXE%" (
+  echo Blender executable was not found:
+  echo   %SC_AURORA_BLENDER_EXE%
+  exit /b 1
+)
+if not exist "%SC_AURORA_SCENE_BLEND%" (
+  echo Aurora scene.blend was not found:
+  echo   %SC_AURORA_SCENE_BLEND%
+  exit /b 1
+)
+echo Opening Aurora scene.blend directly for visual review.
+echo In Blender: press N in the 3D View, open the StarBreaker tab, and select the package root if controls are missing.
+echo Black wire/curve helper data is not necessarily a failed import.
+start "" /D "%SC_AURORA_SCENE_BLEND_DIR%" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%"
+exit /b 0
+"@
+    Write-InstallerFile -Path $launcherPath -Text $content
+
+    $debugContent = @"
+@echo off
+setlocal
+echo Advanced/debug launcher: opens scene.blend through the SC Zero to Hero Blender helper.
+echo The normal launcher opens scene.blend directly. Use this only for diagnostics.
+set "SC_AURORA_BLENDER_EXE=$resolvedBlender"
+set "SC_AURORA_SCENE_BLEND=$resolvedSceneBlend"
+set "SC_AURORA_SCENE_JSON=$resolvedSceneJson"
+set "SC_AURORA_HELPER_SCRIPT=$resolvedHelper"
 set "SC_AURORA_HELPER_LOG=$guiLog"
 set "SC_AURORA_HELPER_MODE=gui"
 if not exist "%SC_AURORA_BLENDER_EXE%" (
@@ -46251,7 +46516,7 @@ if not exist "%SC_AURORA_HELPER_SCRIPT%" (
 start "" "%SC_AURORA_BLENDER_EXE%" --python "%SC_AURORA_HELPER_SCRIPT%"
 exit /b 0
 "@
-    Write-InstallerFile -Path $launcherPath -Text $content
+    Write-InstallerFile -Path $debugLauncherPath -Text $debugContent
     $Script:AuroraImportState.launcherPath = $launcherPath
     return $launcherPath
 }
@@ -46744,6 +47009,7 @@ def create_instruction_text(root):
             'Opened by SC Zero to Hero setup.',
             '',
             'This workflow opens scene.blend directly because it is the StarBreaker Blender scene file.',
+            'The StarBreaker add-on should be enabled persistently by setup.',
             'Select the StarBreaker package root if controls disappear.',
             'Press N and use the StarBreaker tab.',
             'Scroll inside the StarBreaker tab to reach Animations.',
@@ -46910,11 +47176,7 @@ log('Helper finished.')
 
         if (-not $Script:NoGui -and -not (Test-NonLiveInstallerMode)) {
             Write-Host "Opening Blender directly with generated scene.blend for visual review..." -ForegroundColor Cyan
-            $env:SC_AURORA_SCENE_BLEND = $sceneBlend
-            $env:SC_AURORA_SCENE_JSON = $SceneJson
-            $env:SC_AURORA_HELPER_LOG = Join-Path $ScWorkRoot "open_aurora_mr_scene_blend_gui.log"
-            $env:SC_AURORA_HELPER_MODE = "gui"
-            Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList (Get-AuroraBlenderGuiArguments -HelperScript $pyPath)
+            Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @($sceneBlend)
         }
     } catch {
         Write-Warning "Could not validate/open generated scene.blend automatically: $($_.Exception.Message)"
@@ -47341,11 +47603,19 @@ function Show-SetupOutcomeSummary {
                 "OK" { "Green" }
                 "WARN" { "Yellow" }
                 "SKIPPED" { "DarkYellow" }
+                "SKIPPED_PLACEHOLDER" { "DarkCyan" }
                 default { "Red" }
             }
             Write-Host ("  - {0} -> {1}: {2}" -f [string]$b.Repo, [string]$b.Branch, [string]$b.Status) -ForegroundColor $color
             if (-not [string]::IsNullOrWhiteSpace([string]$b.IdentityStatus)) { Write-Host ("    Identity: " + [string]$b.IdentityStatus) -ForegroundColor DarkCyan }
             if (-not [string]::IsNullOrWhiteSpace([string]$b.CurrentBranch)) { Write-Host ("    Current branch: " + [string]$b.CurrentBranch) -ForegroundColor DarkCyan }
+            if ([string]$b.Role -eq "workspace-control" -and [bool]$b.Dirty) {
+                Write-Host "    Workspace-control dirty state is expected after setup: generated files are awaiting user review/commit." -ForegroundColor DarkCyan
+                Write-Host "    Tool repos such as StarBreaker should remain clean unless you modify them directly." -ForegroundColor DarkCyan
+            }
+            if ([string]$b.IdentityStatus -match 'FallbackWritten') {
+                Write-Host "    Repo-local fallback Git identity is informational and not an install failure." -ForegroundColor DarkCyan
+            }
             if (-not [string]::IsNullOrWhiteSpace([string]$b.Reason)) { Write-Host ("    Reason: " + [string]$b.Reason) -ForegroundColor DarkYellow }
         }
     }
@@ -47404,6 +47674,9 @@ function Show-SetupOutcomeSummary {
         Write-Host ("    POM High={0}; Safe viewport={1}; Refresh Materials={2}" -f [string]$Script:AuroraImportState.pomDetailStatus, [string]$Script:AuroraImportState.viewportRenderedStatus, [string]$Script:AuroraImportState.refreshMaterialsStatus) -ForegroundColor DarkCyan
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.launcherPath)) { Write-Host ("    Launcher: " + [string]$Script:AuroraImportState.launcherPath) -ForegroundColor DarkCyan }
         if (-not [string]::IsNullOrWhiteSpace([string]$Script:AuroraImportState.helperLog)) { Write-Host ("    Helper log: " + [string]$Script:AuroraImportState.helperLog) -ForegroundColor DarkGray }
+        Write-Host "    Background Blender audit: geometry/material/metadata/add-on validation." -ForegroundColor DarkCyan
+        Write-Host "    GUI visual review: open scene.blend with the safe launcher; press N in the 3D View and choose the StarBreaker tab." -ForegroundColor DarkCyan
+        Write-Host "    If the StarBreaker UI is missing, select the package root and run the add-on repair command under scdata\\work if needed." -ForegroundColor DarkCyan
     }
 
     if ($failureCount -gt 0 -or $skipCount -gt 0 -or $warningCount -gt 0) {
@@ -47777,7 +48050,10 @@ function Invoke-SelfTest {
             Assert-SelfTest (-not $launcherText.Contains(("space.shading.type = '" + "RENDERED'"))) "Blender GUI helper still forced Rendered viewport directly."
             Assert-SelfTest ($launcherText.Contains("bpy.app.timers.register(make_callback(label), first_interval=delay)")) "Blender GUI helper did not schedule deferred timer retries."
             Assert-SelfTest ($launcherText.Contains("('deferred-0.50s', 0.5)") -and $launcherText.Contains("('deferred-1.50s', 1.5)") -and $launcherText.Contains("('deferred-3.00s', 3.0)")) "Blender GUI helper deferred retry timings were missing."
-            Assert-SelfTest ($launcherText.Contains("Still scanning Data.p4k...") -and $launcherText.Contains("This can be quiet while StarBreaker indexes/searches the archive.") -and $launcherText.Contains("Last log write age:")) "P4K quiet-scan heartbeat text was missing."
+            Assert-SelfTest ($launcherText.Contains("Still scanning Data.p4k...") -and $launcherText.Contains("StarBreaker can be quiet while indexing/searching the archive.") -and $launcherText.Contains("Last log write age:") -and $launcherText.Contains("Current filter or entity target:")) "P4K quiet-scan heartbeat text was missing."
+            Assert-SelfTest ($launcherText.Contains("function Test-P4KQuietScanCommand") -and $launcherText.Contains("Data\.p4k") -and $launcherText.Contains("--p4k") -and $launcherText.Contains("entity\s+loadout") -and $launcherText.Contains("entity\s+export")) "P4K quiet-scan detection did not cover p4k list/Data.p4k/--p4k/entity loadout/export."
+            Assert-SelfTest ($launcherText.Contains("function Enable-StarBreakerBlenderAddonPreference") -and $launcherText.Contains("bpy.ops.preferences.addon_enable(module=MODULE)") -and $launcherText.Contains("bpy.ops.wm.save_userpref()") -and $launcherText.Contains("addon_utils.enable(MODULE, default_set=True, persistent=True)") -and $launcherText.Contains("Repair-StarBreaker-Blender-Addon.cmd")) "StarBreaker Blender add-on persistent preference enable/repair code was missing."
+            Assert-SelfTest ($launcherText.Contains('Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @($sceneBlend)')) "Default Aurora GUI auto-open no longer uses direct scene.blend launch."
             Assert-SelfTest ($launcherText.Contains("InteractiveHiddenPreviewCelebration") -and $launcherText.Contains("-InteractiveHiddenPreviewCelebration")) "Interactive hidden-H celebration flag/path was missing."
             Assert-SelfTest ($launcherText.Contains("CONGRATS, YOU DID IT!") -and $launcherText.Contains("Now make some amazing things, Hero.") -and $launcherText.Contains("DG-42") -and $launcherText.Contains("THE ANTI-SLICER SCRIPT") -and $launcherText.Contains("GO MAKE SOMETHING AMAZING!")) "Success celebration required text was missing."
             Assert-SelfTest (-not $launcherText.Contains(("GO MAKE THE " + "UNREASONABLE"))) "Success celebration contained the rejected status text."
@@ -48691,9 +48967,24 @@ function Invoke-SelfTest {
         $workspace = $workspaceText | ConvertFrom-Json
         $expectedHarnessRoot = To-ForwardSlashPath $Script:HarnessRoot
         $folderNames = @($workspace.folders | ForEach-Object { [string]$_.name })
-        foreach ($expectedName in @("Star Citizen Workspace Control","Prompt Archive","Agent Work Logs","Output Reports","StarBreaker","Blender-Tools","unp4k","Cryengine-Converter","SCTextureConverter","Zero to Hero Guide","scdatatools","qtvscodestyle","scdata")) {
+        foreach ($expectedName in @("Star Citizen Orchestration","Prompt Archive","Agent Work Logs","Output Reports","StarBreaker","Blender-Tools","unp4k","Cryengine-Converter","SCTextureConverter","Zero to Hero Guide","scdatatools","qtvscodestyle","scdata")) {
             Assert-SelfTest ($folderNames -contains $expectedName) "Workspace missing folder: $expectedName"
         }
+        $settings = $workspace.settings
+        Assert-SelfTest ([string]$settings.'terminal.integrated.defaultProfile.windows' -eq "Developer PowerShell for VS 2022") "Workspace default terminal profile was not Developer PowerShell for VS 2022."
+        $profile = $settings.'terminal.integrated.profiles.windows'.'Developer PowerShell for VS 2022'
+        $profileArgs = @($profile.args | ForEach-Object { [string]$_ })
+        $profileCommand = [string]$profileArgs[-1]
+        Assert-SelfTest ([string]$profile.path -eq "powershell.exe") "Workspace Developer PowerShell profile did not launch powershell.exe."
+        Assert-SelfTest ($profileCommand.Contains("Launch-VsDevShell.ps1")) "Workspace terminal profile did not load Visual Studio Developer PowerShell."
+        Assert-SelfTest ($profileCommand.Contains("Python/venvs/scdev/Scripts/Activate.ps1")) "Workspace terminal profile did not activate the shared scdev venv."
+        $vsInvokeIndex = $profileCommand.IndexOf("& 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/Tools/Launch-VsDevShell.ps1'", [StringComparison]::OrdinalIgnoreCase)
+        $venvInvokeIndex = $profileCommand.IndexOf("& `$pythonActivate", [StringComparison]::OrdinalIgnoreCase)
+        Assert-SelfTest ($vsInvokeIndex -ge 0 -and $venvInvokeIndex -gt $vsInvokeIndex) "Workspace terminal profile did not activate the venv after VS DevShell."
+        Assert-SelfTest ($profileCommand.Contains("Set-Location `$starcitizenRoot")) "Workspace terminal profile did not return to the Star Citizen orchestration root."
+        Assert-SelfTest ([string]$settings.'python.defaultInterpreterPath' -match 'Python/venvs/scdev/Scripts/python\.exe$') "Workspace default Python interpreter did not point at the shared scdev venv."
+        Assert-SelfTest ([bool]$settings.'python.terminal.activateEnvironment' -eq $false) "Workspace python.terminal.activateEnvironment was not false."
+        Assert-SelfTest (-not $workspaceText.Contains("Start-StarCitizen-DevShell.ps1")) "Workspace introduced a required external Start-StarCitizen-DevShell.ps1 helper."
         foreach ($folder in @($workspace.folders)) {
             $path = [string]$folder.path
             Assert-SelfTest ($path.StartsWith($expectedHarnessRoot, [StringComparison]::OrdinalIgnoreCase)) "Workspace folder escaped harness root: $path"
@@ -48756,8 +49047,14 @@ function Invoke-SelfTest {
         Write-InstallerFile -Path $fakeBlender -Text "synthetic blender executable placeholder"
         $launcherPath = Write-AuroraSceneBlendLauncher -BlenderExe $fakeBlender -SceneBlend $spaceBlend -SceneJson $spaceScene -HelperScript $spaceHelper
         $launcherText = Get-Content -LiteralPath $launcherPath -Raw
-        Assert-SelfTest (-not ($launcherText -match 'start "" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%"')) "Generated Aurora launcher still passes scene.blend positionally."
-        Assert-SelfTest ($launcherText -match 'start "" "%SC_AURORA_BLENDER_EXE%" --python "%SC_AURORA_HELPER_SCRIPT%"') "Generated Aurora launcher does not use helper-open launch shape."
+        Assert-SelfTest ($launcherText.Contains('set "SC_AURORA_BLENDER_EXE=') -and $launcherText.Contains('set "SC_AURORA_SCENE_BLEND=') -and $launcherText.Contains('set "SC_AURORA_SCENE_BLEND_DIR=')) "Generated Aurora launcher did not set resolved internal paths."
+        Assert-SelfTest ($launcherText -match 'start "" /D "%SC_AURORA_SCENE_BLEND_DIR%" "%SC_AURORA_BLENDER_EXE%" "%SC_AURORA_SCENE_BLEND%"') "Generated Aurora launcher does not open scene.blend directly."
+        Assert-SelfTest (-not $launcherText.Contains("--python")) "Default generated Aurora launcher still used the heavy helper."
+        Assert-SelfTest ($launcherText.Contains("Blender executable was not found") -and $launcherText.Contains("Aurora scene.blend was not found")) "Generated Aurora launcher did not emit clear missing-path errors."
+        $debugLauncherPath = Join-Path $ScWorkRoot "Open-Aurora-MR-in-Blender-with-helper.cmd"
+        Assert-SelfTest (Test-Path -LiteralPath $debugLauncherPath) "Optional advanced/debug Aurora helper launcher was not generated."
+        $debugLauncherText = Get-Content -LiteralPath $debugLauncherPath -Raw
+        Assert-SelfTest ($debugLauncherText.Contains("Advanced/debug launcher") -and $debugLauncherText.Contains("--python")) "Optional helper launcher was not clearly labeled as advanced/debug."
         $sceneBlendOk = New-AuroraImportAuditResult -SceneJson $fakeScene -SceneBlend $fakeBlend -PackageRoot "RSI Aurora MR" -ObjectCount 420 -MeshObjectCount 118 -NonzeroUsedMeshDatablockCount 118 -CollectionInstanceCount 0 -ActionCount 3 -LinkedLibraryCount 12 -MissingAssetCount 0 -MeshAssetReferenceCount 120 -ExistingMeshAssetCount 120 -MaterialCount 88 -ImageCount 42 -AddonStatus "OK" -GeometryStatus "OK" -MaterialsStatus "OK" -AnimationMetadataStatus "OK" -AnimationControlsStatus "OK" -PomDetailStatus "OK" -ViewportRenderedStatus "OK" -RefreshMaterialsStatus "OK" -SceneBlendValidationPrimary:$true
         Assert-SelfTest ([string]$sceneBlendOk.Status -eq "OK") "scene.blend geometry validation did not pass when meshes were present."
         Set-AuroraImportStateFromAudit -Audit $sceneBlendOk -HelperLog (Join-Path $auroraTestRoot "helper-ok.log")
@@ -48801,10 +49098,19 @@ function Invoke-SelfTest {
         Assert-SelfTest ([string]$workspaceState[0].Branch -eq "dev-setup-stabilization") "Workspace-control branch target was wrong."
         $workspaceGitignoreText = Get-Content -LiteralPath (Join-Path $StarCitizenRoot ".gitignore") -Raw
         Assert-SelfTest ($workspaceGitignoreText -match "\*") "Workspace-control protective .gitignore was not written."
-        Assert-SelfTest ((Get-OptionalPrivateRepoSkipReason -Path (Join-Path $Script:HarnessRoot "missing-scdatatools")) -match "missing") "Missing optional private repo reason was not optional/missing."
+        Assert-SelfTest ((Get-OptionalPrivateRepoSkipReason -Path (Join-Path $Script:HarnessRoot "missing-scdatatools")) -match "placeholder|created yet") "Missing optional private repo reason was not optional/placeholder."
         $emptyPrivate = Join-Path $Script:HarnessRoot "empty-qtvscodestyle"
         New-InstallerDirectory -Path $emptyPrivate
-        Assert-SelfTest ((Get-OptionalPrivateRepoSkipReason -Path $emptyPrivate) -match "empty") "Empty optional private repo reason was not optional/empty."
+        Assert-SelfTest ((Get-OptionalPrivateRepoSkipReason -Path $emptyPrivate) -match "empty|placeholder") "Empty optional private repo reason was not optional/empty placeholder."
+        Ensure-OptionalPrivateRepoPlaceholders
+        foreach ($placeholderName in @("scdatatools", "qtvscodestyle")) {
+            $placeholderPath = Join-Path $StarCitizenRoot $placeholderName
+            $placeholderReadme = Join-Path $placeholderPath "README.placeholder.md"
+            Assert-SelfTest (Test-Path -LiteralPath $placeholderPath) "Optional private placeholder directory was not created: $placeholderName"
+            Assert-SelfTest (Test-Path -LiteralPath $placeholderReadme) "Optional private placeholder README was not written: $placeholderName"
+            Assert-SelfTest (-not (Test-Path -LiteralPath (Join-Path $placeholderPath ".git"))) "Optional private placeholder was initialized as a Git repo: $placeholderName"
+            Assert-SelfTest (-not (Initialize-PrivateRepoIfUseful -Path $placeholderPath -InitialBranch "dev-private-review")) "Placeholder-only optional private repo was initialized instead of skipped: $placeholderName"
+        }
         $dubious = Test-GitDubiousOwnershipOutput -OutputLines @("fatal: detected dubious ownership in repository at 'C:/dev/starcitizen/StarBreaker'", "git config --global --add safe.directory C:/dev/starcitizen/StarBreaker")
         Assert-SelfTest ([bool]$dubious.Blocked) "Dubious ownership output was not classified."
         Assert-SelfTest ((Get-ProgressTransitionHoldMilliseconds) -eq 0) "Progress transition hold was not disabled/minimized in self-test."
@@ -48871,17 +49177,43 @@ function ConvertTo-StarBreakerCommandLine {
     return ($parts -join ' ')
 }
 
+function Get-P4KQuietScanTargetSummary {
+    param([string[]]$Arguments = @())
+    if ($null -eq $Arguments -or $Arguments.Count -eq 0) { return "" }
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $value = [string]$Arguments[$i]
+        if ($value -match '^(?i)--filter$' -and ($i + 1) -lt $Arguments.Count) { return ("filter: {0}" -f [string]$Arguments[$i + 1]) }
+        if ($value -match '^(?i)--p4k$' -and ($i + 1) -lt $Arguments.Count) { continue }
+        if ($i -lt ($Arguments.Count - 2) -and $value -match '^(?i)entity$') {
+            $sub = [string]$Arguments[$i + 1]
+            if ($sub -match '^(?i)(loadout|export)$') { return ("entity {0}: {1}" -f $sub.ToLowerInvariant(), [string]$Arguments[$i + 2]) }
+        }
+    }
+    return ""
+}
+
+function Test-P4KQuietScanCommand {
+    param(
+        [string[]]$Arguments = @(),
+        [string]$StepId = "",
+        [string]$CommandDisplay = ""
+    )
+    $joined = ((@($Arguments) + @($StepId, $CommandDisplay)) -join ' ')
+    return ($joined -match '(?i)(\bp4k\s+list\b|Data\.p4k|--p4k\b|\bentity\s+loadout\b|\bentity\s+export\b|p4k[-_ ]?(explore|scan|list)|aurora[-_ ]?(example|export)|verify[-_ ]?sc[-_ ]?build)')
+}
+
 function Test-StarBreakerP4KScanArguments {
     param([string[]]$Arguments = @())
-    $joined = (@($Arguments) -join ' ')
-    return ($joined -match '(?i)\bp4k\s+list\b|\bp4k\b.*\b--filter\b')
+    return (Test-P4KQuietScanCommand -Arguments $Arguments)
 }
 
 function Get-P4KQuietScanHeartbeatNote {
     param(
         [string]$BaseNote = "",
         [string]$LogPath = "",
-        [TimeSpan]$Elapsed = ([TimeSpan]::Zero)
+        [TimeSpan]$Elapsed = ([TimeSpan]::Zero),
+        [string[]]$Arguments = @(),
+        [string]$CommandDisplay = ""
     )
     if ($Elapsed.TotalSeconds -lt 20) { return $BaseNote }
 
@@ -48896,12 +49228,16 @@ function Get-P4KQuietScanHeartbeatNote {
     } catch { }
 
     $elapsedText = ("{0:00}:{1:00}:{2:00}" -f [int]$Elapsed.TotalHours, $Elapsed.Minutes, $Elapsed.Seconds)
+    $target = Get-P4KQuietScanTargetSummary -Arguments $Arguments
+    if ([string]::IsNullOrWhiteSpace($target) -and $CommandDisplay -match '(?i)\b(RSI_Aurora_MR[0-9A-Za-z_]*)\b') { $target = "entity target: " + [string]$matches[1] }
+    if ([string]::IsNullOrWhiteSpace($target)) { $target = "not specified" }
     return @"
 Still scanning Data.p4k...
-This can be quiet while StarBreaker indexes/searches the archive.
+StarBreaker can be quiet while indexing/searching the archive.
 Elapsed time: $elapsedText
 Last log write age: $lastAge
 Output log path: $LogPath
+Current filter or entity target: $target
 Do not close this window.
 "@.Trim()
 }
@@ -48987,7 +49323,7 @@ function Invoke-StarBreakerLoggedV23 {
         $Script:LastCommandLogPath = $LogPath
         $Script:LastCommandDisplay = $display
         $Script:LastActivityNote = $ActivityNote
-        $isP4KScan = Test-StarBreakerP4KScanArguments -Arguments $Arguments
+        $isP4KScan = Test-P4KQuietScanCommand -Arguments $Arguments -StepId $ActivityNote -CommandDisplay $display
         while ($null -ne $proc -and -not $proc.HasExited) {
             try {
                 if (Test-Path -LiteralPath $stdout) {
@@ -49009,7 +49345,7 @@ function Invoke-StarBreakerLoggedV23 {
             $spinner = $spinnerFrames[$tick % $spinnerFrames.Count]
             $liveNote = $ActivityNote
             if ($isP4KScan) {
-                $liveNote = Get-P4KQuietScanHeartbeatNote -BaseNote $ActivityNote -LogPath $LogPath -Elapsed $elapsed
+                $liveNote = Get-P4KQuietScanHeartbeatNote -BaseNote $ActivityNote -LogPath $LogPath -Elapsed $elapsed -Arguments $Arguments -CommandDisplay $display
             }
             Write-ActiveCommandDashboard -CommandDisplay $display -LogPath $LogPath -ActivityNote $liveNote -Spinner $spinner -Elapsed $elapsed -Status "RUNNING"
             Start-Sleep -Seconds 1
