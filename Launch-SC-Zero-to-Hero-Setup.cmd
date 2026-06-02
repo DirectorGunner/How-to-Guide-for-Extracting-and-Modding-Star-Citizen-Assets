@@ -86,10 +86,7 @@ if not "%DG_ANIM_ON%"=="1" goto :StaticLauncherPrompt
 set "DG_ANIM_FALLBACK="
 call :StopLauncherMusic
 call :RunIntroAnimation
-if errorlevel 1 (
-    if "%DG_ANIM_ON%"=="1" set "DG_ANIM_FALLBACK=1"
-    goto :StaticLauncherPrompt
-)
+set "DG_INTRO_RUN_EXIT=%ERRORLEVEL%"
 if /I "%DG_LAUNCH_KEY%"=="Y" (
     call :StopLauncherMusic
     set "DG_MODE=live"
@@ -104,7 +101,13 @@ if /I "%DG_LAUNCH_KEY%"=="H" (
     set "DG_MODE=hidden"
     goto :ChooseInstallRoot
 )
-goto :StartLauncher
+if not "%DG_INTRO_RUN_EXIT%"=="0" (
+    if "%DG_ANIM_ON%"=="1" set "DG_ANIM_FALLBACK=1"
+    goto :StaticLauncherPrompt
+)
+if "%DG_ANIM_ON%"=="1" set "DG_ANIM_FALLBACK=1"
+if not defined DG_ANIM_FALLBACK_REASON set "DG_ANIM_FALLBACK_REASON=intro returned no launcher choice"
+goto :StaticLauncherPrompt
 
 :StaticLauncherPrompt
 cls
@@ -48171,6 +48174,16 @@ function Invoke-SelfTest {
             $introYAcceptIndex = if ($introChoiceParseIndex -ge 0) { $launcherText.IndexOf('if /I "%DG_LAUNCH_KEY%"=="Y" exit /b 0', $introChoiceParseIndex) } else { -1 }
             $introFallbackReasonIndex = if ($introYAcceptIndex -ge 0) { $launcherText.IndexOf('set "DG_ANIM_FALLBACK_REASON=intro process exited before returning a valid choice"', $introYAcceptIndex) } else { -1 }
             Assert-SelfTest ($introExitCaptureIndex -ge 0 -and $introChoiceParseIndex -gt $introExitCaptureIndex -and $introYAcceptIndex -gt $introChoiceParseIndex -and $introFallbackReasonIndex -gt $introYAcceptIndex) "RunIntroAnimation did not make an explicit HINTRO CHOICE=Y authoritative before process-exit fallback."
+            $startLauncherLine = [Array]::IndexOf($launcherLines, ":StartLauncher")
+            $staticLauncherLine = [Array]::IndexOf($launcherLines, ":StaticLauncherPrompt")
+            $startLauncherSection = if ($startLauncherLine -ge 0 -and $staticLauncherLine -gt $startLauncherLine) { @($launcherLines[$startLauncherLine..($staticLauncherLine - 1)]) } else { @() }
+            $startRunIntroLine = [Array]::IndexOf($startLauncherSection, "call :RunIntroAnimation")
+            $startRunExitLine = [Array]::IndexOf($startLauncherSection, 'set "DG_INTRO_RUN_EXIT=%ERRORLEVEL%"')
+            $startYRouteLine = [Array]::IndexOf($startLauncherSection, 'if /I "%DG_LAUNCH_KEY%"=="Y" (')
+            $startNRouteLine = [Array]::IndexOf($startLauncherSection, 'if /I "%DG_LAUNCH_KEY%"=="N" (')
+            $startHRouteLine = [Array]::IndexOf($startLauncherSection, 'if /I "%DG_LAUNCH_KEY%"=="H" (')
+            $startFallbackLine = [Array]::IndexOf($startLauncherSection, 'if not "%DG_INTRO_RUN_EXIT%"=="0" (')
+            Assert-SelfTest ($startRunIntroLine -ge 0 -and $startRunExitLine -gt $startRunIntroLine -and $startYRouteLine -gt $startRunExitLine -and $startNRouteLine -gt $startYRouteLine -and $startHRouteLine -gt $startNRouteLine -and $startFallbackLine -gt $startHRouteLine -and (-not ($startLauncherSection -contains "if errorlevel 1 ("))) "StartLauncher did not route valid intro Y/N/H choices before RunIntroAnimation fallback handling."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y"') -and $launcherText.Contains("goto :ChooseInstallRoot")) "Normal Y handoff did not go directly to install-root selection."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y" exit /b 0') -and $launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y" (') -and $launcherText.Contains('goto :ChooseInstallRoot')) "Explicit HINTRO Y did not route directly to root selection without the static prompt."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="N"') -and $launcherText.Contains("goto :Cancelled")) "Explicit N cancel path was missing."

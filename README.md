@@ -786,7 +786,7 @@ Paste this workspace JSON, adjusting paths if needed:
           "-ExecutionPolicy",
           "Bypass",
           "-Command",
-          "& 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/Tools/Launch-VsDevShell.ps1' -Arch amd64"
+          "$devRoot=(Resolve-Path '${workspaceFolder:Star Citizen Orchestration}/..').Path; $starcitizenRoot=(Resolve-Path '${workspaceFolder:Star Citizen Orchestration}').Path; $dotnetRoot=Join-Path $devRoot 'dotnet'; $pythonActivate=Join-Path $devRoot 'Python/venvs/scdev/Scripts/Activate.ps1'; $env:DOTNET_ROOT=$dotnetRoot; $env:PATH=$dotnetRoot + ';' + $env:PATH; if (Test-Path 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/Tools/Launch-VsDevShell.ps1') { & 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/Tools/Launch-VsDevShell.ps1' -Arch amd64 -HostArch amd64 } else { Write-Warning 'Visual Studio Build Tools Developer PowerShell was not found.' }; if (Test-Path $pythonActivate) { & $pythonActivate }; Set-Location $starcitizenRoot"
         ]
       },
       "PowerShell": {
@@ -794,24 +794,64 @@ Paste this workspace JSON, adjusting paths if needed:
       }
     },
     "terminal.integrated.env.windows": {
-      "SC_DEV_ROOT": "D:/dev",
-      "SC_STAR_CITIZEN_ROOT": "D:/dev/starcitizen",
-      "SC_DATA_ROOT": "D:/dev/scdata",
-      "SC_P4K_ROOT": "D:/dev/scdata/p4k",
-      "SC_EXPORT_ROOT": "D:/dev/scdata/exports",
-      "SC_WORK_ROOT": "D:/dev/scdata/work",
-      "SC_PROMPTS_ROOT": "D:/dev/starcitizen/prompts",
-      "SC_AGENT_WORK_ROOT": "D:/dev/starcitizen/work",
-      "SC_REPORTS_ROOT": "D:/dev/starcitizen/output/reports",
-      "SC_WORKSPACE_PATH": "D:/dev/starcitizen/_workspace/starcitizen-tools.code-workspace",
-      "SC_GUIDE_REPO": "D:/dev/starcitizen/How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets"
+      "DOTNET_ROOT": "${workspaceFolder:Star Citizen Orchestration}/../dotnet",
+      "PATH": "${workspaceFolder:Star Citizen Orchestration}/../dotnet;${env:PATH}",
+      "SC_DEV_ROOT": "${workspaceFolder:Star Citizen Orchestration}/..",
+      "SC_STARCITIZEN_ROOT": "${workspaceFolder:Star Citizen Orchestration}",
+      "SC_DATA_ROOT": "${workspaceFolder:Star Citizen Orchestration}/../scdata",
+      "SC_P4K_ROOT": "${workspaceFolder:Star Citizen Orchestration}/../scdata/p4k",
+      "SC_EXPORT_ROOT": "${workspaceFolder:Star Citizen Orchestration}/../scdata/exports",
+      "SC_WORK_ROOT": "${workspaceFolder:Star Citizen Orchestration}/../scdata/work",
+      "SC_STARBREAKER_ROOT": "${workspaceFolder:StarBreaker}",
+      "SC_BLENDER_TOOLS_ROOT": "${workspaceFolder:Blender-Tools}",
+      "SC_UNP4K_ROOT": "${workspaceFolder:unp4k}",
+      "SC_CRYENGINE_CONVERTER_ROOT": "${workspaceFolder:Cryengine-Converter}",
+      "SC_TEXTURE_CONVERTER_ROOT": "${workspaceFolder:SCTextureConverter}",
+      "SC_BUILD": "",
+      "SC_DATA_P4K": "",
+      "SC_BLENDER_EXE": "",
+      "SC_BLENDER_VERSION": ""
     },
-    "python.defaultInterpreterPath": "D:/dev/python/venvs/scdev/Scripts/python.exe",
+    "dotnet.defaultSolution": "${workspaceFolder:Cryengine-Converter}/Cryengine Converter.sln",
+    "dotnet.server.path": "${workspaceFolder:Star Citizen Orchestration}/../dotnet/dotnet.exe",
+    "dotnetAcquisitionExtension.existingDotnetPath": [
+      {
+        "extensionId": "ms-dotnettools.csharp",
+        "path": "${workspaceFolder:Star Citizen Orchestration}/../dotnet/dotnet.exe"
+      },
+      {
+        "extensionId": "ms-dotnettools.csdevkit",
+        "path": "${workspaceFolder:Star Citizen Orchestration}/../dotnet/dotnet.exe"
+      },
+      {
+        "extensionId": "ms-dotnettools.vscodeintellicode-csharp",
+        "path": "${workspaceFolder:Star Citizen Orchestration}/../dotnet/dotnet.exe"
+      }
+    ],
+    "python.defaultInterpreterPath": "${workspaceFolder:Star Citizen Orchestration}/../Python/venvs/scdev/Scripts/python.exe",
+    "python.terminal.activateEnvironment": false,
     "files.exclude": {
       "**/target": true,
       "**/bin": true,
       "**/obj": true,
-      "**/__pycache__": true
+      "**/__pycache__": true,
+      "StarBreaker": true,
+      "Blender-Tools": true,
+      "unp4k": true,
+      "Cryengine-Converter": true,
+      "SCTextureConverter": true,
+      "How-to-Guide-for-Extracting-and-Modding-Star-Citizen-Assets": true,
+      "scdatatools": true,
+      "qtvscodestyle": true
+    },
+    "search.exclude": {
+      "**/target": true,
+      "**/bin": true,
+      "**/obj": true,
+      "**/__pycache__": true,
+      "**/scdata/p4k": true,
+      "**/scdata/exports": true,
+      "**/scdata/logs": true
     }
   }
 }
