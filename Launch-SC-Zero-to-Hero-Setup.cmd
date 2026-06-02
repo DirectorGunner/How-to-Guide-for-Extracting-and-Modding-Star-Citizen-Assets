@@ -44925,8 +44925,10 @@ function Write-StarBreakerBlenderAddonRepairCommand {
     )
     Ensure-Directory $ScWorkRoot
     $cmdPath = Join-Path $ScWorkRoot "Repair-StarBreaker-Blender-Addon.cmd"
-    $stdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stdout.log"
-    $stderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stderr.log"
+    $stdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.enable.stdout.log"
+    $stderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.enable.stderr.log"
+    $verifyStdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.verify.stdout.log"
+    $verifyStderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.verify.stderr.log"
     $content = @"
 @echo off
 setlocal
@@ -44935,6 +44937,20 @@ set "SC_REPAIR_SCRIPT=$HelperScript"
 set "SC_REPAIR_LOG=$LogPath"
 set "SC_REPAIR_STDOUT=$stdoutPath"
 set "SC_REPAIR_STDERR=$stderrPath"
+set "SC_REPAIR_VERIFY_STDOUT=$verifyStdoutPath"
+set "SC_REPAIR_VERIFY_STDERR=$verifyStderrPath"
+if not exist "%SC_BLENDER_EXE%" (
+  for /f "delims=" %%B in ('where blender.exe 2^>nul') do (
+    if not defined SC_BLENDER_FOUND set "SC_BLENDER_FOUND=%%B"
+  )
+  if defined SC_BLENDER_FOUND set "SC_BLENDER_EXE=%SC_BLENDER_FOUND%"
+)
+if not exist "%SC_BLENDER_EXE%" (
+  for /f "delims=" %%B in ('dir /b /s "%ProgramFiles%\Blender Foundation\Blender\*\blender.exe" 2^>nul') do (
+    if not defined SC_BLENDER_FOUND set "SC_BLENDER_FOUND=%%B"
+  )
+  if defined SC_BLENDER_FOUND set "SC_BLENDER_EXE=%SC_BLENDER_FOUND%"
+)
 if not exist "%SC_BLENDER_EXE%" (
   echo Blender executable was not found:
   echo   %SC_BLENDER_EXE%
@@ -44945,10 +44961,21 @@ if not exist "%SC_REPAIR_SCRIPT%" (
   echo   %SC_REPAIR_SCRIPT%
   exit /b 1
 )
+set "SC_REPAIR_MODE=enable"
 "%SC_BLENDER_EXE%" --background --python "%SC_REPAIR_SCRIPT%" > "%SC_REPAIR_STDOUT%" 2> "%SC_REPAIR_STDERR%"
 set "SC_REPAIR_EXIT=%ERRORLEVEL%"
+if "%SC_REPAIR_EXIT%"=="2" (
+  echo StarBreaker add-on was enabled, but Blender user preference save failed.
+  echo Log:
+  echo   %SC_REPAIR_LOG%
+  echo Stdout:
+  echo   %SC_REPAIR_STDOUT%
+  echo Stderr:
+  echo   %SC_REPAIR_STDERR%
+  exit /b 2
+)
 if not "%SC_REPAIR_EXIT%"=="0" (
-  echo StarBreaker Blender add-on repair failed with exit code %SC_REPAIR_EXIT%.
+  echo StarBreaker Blender add-on repair failed while enabling with exit code %SC_REPAIR_EXIT%.
   echo Log:
   echo   %SC_REPAIR_LOG%
   echo Stdout:
@@ -44957,7 +44984,20 @@ if not "%SC_REPAIR_EXIT%"=="0" (
   echo   %SC_REPAIR_STDERR%
   exit /b %SC_REPAIR_EXIT%
 )
-echo StarBreaker Blender add-on repair completed.
+set "SC_REPAIR_MODE=verify"
+"%SC_BLENDER_EXE%" --background --python "%SC_REPAIR_SCRIPT%" > "%SC_REPAIR_VERIFY_STDOUT%" 2> "%SC_REPAIR_VERIFY_STDERR%"
+set "SC_REPAIR_VERIFY_EXIT=%ERRORLEVEL%"
+if not "%SC_REPAIR_VERIFY_EXIT%"=="0" (
+  echo StarBreaker add-on was enabled in the first pass, but fresh-process verification failed with exit code %SC_REPAIR_VERIFY_EXIT%.
+  echo Log:
+  echo   %SC_REPAIR_LOG%
+  echo Verify stdout:
+  echo   %SC_REPAIR_VERIFY_STDOUT%
+  echo Verify stderr:
+  echo   %SC_REPAIR_VERIFY_STDERR%
+  exit /b %SC_REPAIR_VERIFY_EXIT%
+)
+echo StarBreaker add-on enabled and saved. Fresh-process verification passed.
 echo Log:
 echo   %SC_REPAIR_LOG%
 exit /b 0
@@ -44981,18 +45021,22 @@ function Enable-StarBreakerBlenderAddonPreference {
         $blenderExe = [string]$Script:BlenderState.exe
         $helperPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.py"
         $logPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.log"
-        $stdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stdout.log"
-        $stderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.stderr.log"
+        $stdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.enable.stdout.log"
+        $stderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.enable.stderr.log"
+        $verifyStdoutPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.verify.stdout.log"
+        $verifyStderrPath = Join-Path $ScWorkRoot "repair_starbreaker_blender_addon.verify.stderr.log"
         $result.LogPath = $logPath
         $result.StdoutLog = $stdoutPath
         $result.StderrLog = $stderrPath
 
         $py = @'
 import os
+import sys
 import traceback
 
 MODULE = 'starbreaker_addon'
 log_path = os.environ.get('SC_REPAIR_LOG', '')
+mode = os.environ.get('SC_REPAIR_MODE', 'enable').strip().lower() or 'enable'
 
 
 def log(msg):
@@ -45012,34 +45056,80 @@ try:
 
     log('Blender version=' + bpy.app.version_string)
     log('Blender user scripts=' + str(bpy.utils.user_resource('SCRIPTS')))
-    method = ''
+    log('mode=' + mode)
+
+    def refresh_discovery():
+        try:
+            bpy.ops.preferences.addon_refresh()
+            log('Refreshed add-on discovery with bpy.ops.preferences.addon_refresh().')
+        except Exception as exc:
+            log('bpy.ops.preferences.addon_refresh unavailable/failed: ' + str(exc))
+        try:
+            modules = addon_utils.modules(refresh=True)
+            log('Refreshed add-on modules with addon_utils.modules(refresh=True); module_count=' + str(len(modules)))
+        except TypeError:
+            try:
+                modules = addon_utils.modules()
+                log('Enumerated add-on modules with addon_utils.modules(); module_count=' + str(len(modules)))
+            except Exception as exc:
+                log('addon_utils.modules() failed: ' + str(exc))
+        except Exception as exc:
+            log('addon_utils.modules(refresh=True) failed: ' + str(exc))
+
+    def check_status(label):
+        pref_enabled = False
+        default_enabled = False
+        loaded = False
+        try:
+            pref_enabled = MODULE in bpy.context.preferences.addons
+        except Exception as exc:
+            log(label + ': preferences.addons check failed: ' + str(exc))
+        try:
+            default_enabled, loaded = addon_utils.check(MODULE)
+        except Exception as exc:
+            log(label + ': addon_utils.check failed: ' + str(exc))
+        log(label + ': preferences_enabled=' + str(pref_enabled) + '; addon_utils.check default_enabled=' + str(default_enabled) + ' loaded=' + str(loaded))
+        return bool(pref_enabled), bool(default_enabled), bool(loaded)
+
+    refresh_discovery()
+    pref_enabled, default_enabled, loaded = check_status('before')
+    if mode == 'verify':
+        if pref_enabled:
+            log('STATUS=OK')
+            sys.exit(0)
+        raise RuntimeError('starbreaker_addon is not enabled in bpy.context.preferences.addons during fresh-process verification.')
+
+    methods = []
     try:
         bpy.ops.preferences.addon_enable(module=MODULE)
-        method = 'bpy.ops.preferences.addon_enable'
+        methods.append('bpy.ops.preferences.addon_enable')
         log('Enabled add-on using bpy.ops.preferences.addon_enable(module=MODULE).')
     except Exception as exc:
         log('bpy.ops.preferences.addon_enable failed: ' + str(exc))
-        addon_utils.enable(MODULE, default_set=True, persistent=True)
-        method = 'addon_utils.enable(default_set=True,persistent=True)'
-        log('Enabled add-on using addon_utils.enable(MODULE, default_set=True, persistent=True).')
-
-    enabled = False
     try:
-        default_enabled, loaded = addon_utils.check(MODULE)
-        enabled = bool(default_enabled or loaded)
-        log('addon_utils.check default_enabled=' + str(default_enabled) + ' loaded=' + str(loaded))
+        addon_utils.enable(MODULE, default_set=True, persistent=True)
+        methods.append('addon_utils.enable(default_set=True,persistent=True)')
+        log('Enabled add-on using addon_utils.enable(MODULE, default_set=True, persistent=True).')
     except Exception as exc:
-        log('addon_utils.check failed: ' + str(exc))
+        log('addon_utils.enable failed: ' + str(exc))
+    if not methods:
+        raise RuntimeError('No add-on enable method succeeded for ' + MODULE)
 
+    pref_enabled, default_enabled, loaded = check_status('after-enable')
+    save_ok = True
     try:
         bpy.ops.wm.save_userpref()
         log('Saved Blender user preferences with bpy.ops.wm.save_userpref().')
     except Exception as exc:
+        save_ok = False
         log('bpy.ops.wm.save_userpref failed: ' + str(exc))
-        raise
 
-    if not enabled:
-        raise RuntimeError('starbreaker_addon was not confirmed enabled after ' + method)
+    pref_enabled, default_enabled, loaded = check_status('after-save')
+    if not pref_enabled:
+        raise RuntimeError('starbreaker_addon was not enabled in bpy.context.preferences.addons after enable/save. Methods=' + ', '.join(methods))
+    if not save_ok:
+        log('STATUS=WARN_SAVE_FAILED')
+        sys.exit(2)
 
     log('STATUS=OK')
 except Exception as exc:
@@ -45072,15 +45162,37 @@ except Exception as exc:
         }
 
         Assert-InstallerExternalCommandAllowed -Exe $blenderExe -Arguments @("--background", "--python", $helperPath)
-        Remove-Item -LiteralPath $logPath,$stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
-        $proc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", "--python", $helperPath) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -Wait -PassThru
-        if ($null -ne $proc -and [int]$proc.ExitCode -eq 0) {
+        Remove-Item -LiteralPath $logPath,$stdoutPath,$stderrPath,$verifyStdoutPath,$verifyStderrPath -Force -ErrorAction SilentlyContinue
+        $oldRepairLog = $env:SC_REPAIR_LOG
+        $oldRepairMode = $env:SC_REPAIR_MODE
+        try {
+            $env:SC_REPAIR_LOG = $logPath
+            $env:SC_REPAIR_MODE = "enable"
+            $proc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", "--python", $helperPath) -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -Wait -PassThru
+            $enableExitCode = if ($null -ne $proc) { [int]$proc.ExitCode } else { 9999 }
+            if ($enableExitCode -eq 2) {
+                $result.Status = "WARN"
+                $result.Reason = "StarBreaker add-on was enabled, but Blender user preference save failed; run the generated repair command after setup."
+                return [pscustomobject]$result
+            }
+            if ($enableExitCode -ne 0) {
+                $result.Status = "WARN"
+                $result.Reason = "Blender background add-on enablement returned exit code $enableExitCode; run the generated repair command after setup."
+                return [pscustomobject]$result
+            }
+            $env:SC_REPAIR_MODE = "verify"
+            $verifyProc = Start-Process -FilePath $blenderExe -ArgumentList @("--background", "--python", $helperPath) -RedirectStandardOutput $verifyStdoutPath -RedirectStandardError $verifyStderrPath -WindowStyle Hidden -Wait -PassThru
+            $verifyExitCode = if ($null -ne $verifyProc) { [int]$verifyProc.ExitCode } else { 9999 }
+        } finally {
+            $env:SC_REPAIR_LOG = $oldRepairLog
+            $env:SC_REPAIR_MODE = $oldRepairMode
+        }
+        if ($enableExitCode -eq 0 -and $verifyExitCode -eq 0) {
             $result.Status = "OK"
-            $result.Reason = "StarBreaker Blender add-on was enabled persistently in Blender user preferences."
+            $result.Reason = "StarBreaker Blender add-on was enabled, saved, and verified in a fresh Blender background process."
         } else {
-            $exitCode = if ($null -ne $proc) { [int]$proc.ExitCode } else { 9999 }
             $result.Status = "WARN"
-            $result.Reason = "Blender background preference enablement returned exit code $exitCode; use the generated repair command after setup."
+            $result.Reason = "StarBreaker add-on enablement ran, but fresh-process verification returned exit code $verifyExitCode; run the generated repair command after setup."
         }
     } catch {
         $result.Status = "WARN"
@@ -48050,9 +48162,10 @@ function Invoke-SelfTest {
             Assert-SelfTest (-not $launcherText.Contains(("space.shading.type = '" + "RENDERED'"))) "Blender GUI helper still forced Rendered viewport directly."
             Assert-SelfTest ($launcherText.Contains("bpy.app.timers.register(make_callback(label), first_interval=delay)")) "Blender GUI helper did not schedule deferred timer retries."
             Assert-SelfTest ($launcherText.Contains("('deferred-0.50s', 0.5)") -and $launcherText.Contains("('deferred-1.50s', 1.5)") -and $launcherText.Contains("('deferred-3.00s', 3.0)")) "Blender GUI helper deferred retry timings were missing."
-            Assert-SelfTest ($launcherText.Contains("Still scanning Data.p4k...") -and $launcherText.Contains("StarBreaker can be quiet while indexing/searching the archive.") -and $launcherText.Contains("Last log write age:") -and $launcherText.Contains("Current filter or entity target:")) "P4K quiet-scan heartbeat text was missing."
-            Assert-SelfTest ($launcherText.Contains("function Test-P4KQuietScanCommand") -and $launcherText.Contains("Data\.p4k") -and $launcherText.Contains("--p4k") -and $launcherText.Contains("entity\s+loadout") -and $launcherText.Contains("entity\s+export")) "P4K quiet-scan detection did not cover p4k list/Data.p4k/--p4k/entity loadout/export."
-            Assert-SelfTest ($launcherText.Contains("function Enable-StarBreakerBlenderAddonPreference") -and $launcherText.Contains("bpy.ops.preferences.addon_enable(module=MODULE)") -and $launcherText.Contains("bpy.ops.wm.save_userpref()") -and $launcherText.Contains("addon_utils.enable(MODULE, default_set=True, persistent=True)") -and $launcherText.Contains("Repair-StarBreaker-Blender-Addon.cmd")) "StarBreaker Blender add-on persistent preference enable/repair code was missing."
+            Assert-SelfTest ($launcherText.Contains("P4K SCAN STATUS: still working") -and $launcherText.Contains("StarBreaker can be quiet while indexing/searching Data.p4k.") -and $launcherText.Contains("Last log write age:") -and $launcherText.Contains("Current command target/filter/entity:") -and $launcherText.Contains("To abort cleanly, press Ctrl+C")) "P4K quiet-scan heartbeat block text was missing."
+            Assert-SelfTest (-not $launcherText.Contains(('if ($Elapsed.TotalSeconds -lt 20)' + ' { return $BaseNote }'))) "P4K heartbeat still waited behind the old quiet threshold."
+            Assert-SelfTest ($launcherText.Contains("function Test-P4KQuietScanCommand") -and $launcherText.Contains("starbreaker\b.*\bp4k") -and $launcherText.Contains("p4k\s+list") -and $launcherText.Contains("Data\.p4k") -and $launcherText.Contains("--p4k") -and $launcherText.Contains("entity\s+loadout") -and $launcherText.Contains("entity\s+export") -and $launcherText.Contains("RSI_Aurora")) "P4K quiet-scan detection did not cover p4k list/Data.p4k/--p4k/entity loadout/export/Aurora contexts."
+            Assert-SelfTest ($launcherText.Contains("function Enable-StarBreakerBlenderAddonPreference") -and $launcherText.Contains("addon_utils.modules(refresh=True)") -and $launcherText.Contains("bpy.ops.preferences.addon_enable(module=MODULE)") -and $launcherText.Contains("addon_utils.enable(MODULE, default_set=True, persistent=True)") -and $launcherText.Contains("bpy.ops.wm.save_userpref()") -and $launcherText.Contains("MODULE in bpy.context.preferences.addons") -and $launcherText.Contains("addon_utils.check(MODULE)") -and $launcherText.Contains('SC_REPAIR_MODE = "verify"') -and $launcherText.Contains("Repair-StarBreaker-Blender-Addon.cmd")) "StarBreaker Blender add-on persistent preference enable/repair/fresh-verify code was missing."
             Assert-SelfTest ($launcherText.Contains('Start-InstallerGuiProcess -FilePath $blenderExe -ArgumentList @($sceneBlend)')) "Default Aurora GUI auto-open no longer uses direct scene.blend launch."
             Assert-SelfTest ($launcherText.Contains("InteractiveHiddenPreviewCelebration") -and $launcherText.Contains("-InteractiveHiddenPreviewCelebration")) "Interactive hidden-H celebration flag/path was missing."
             Assert-SelfTest ($launcherText.Contains("CONGRATS, YOU DID IT!") -and $launcherText.Contains("Now make some amazing things, Hero.") -and $launcherText.Contains("DG-42") -and $launcherText.Contains("THE ANTI-SLICER SCRIPT") -and $launcherText.Contains("GO MAKE SOMETHING AMAZING!")) "Success celebration required text was missing."
@@ -49199,7 +49312,7 @@ function Test-P4KQuietScanCommand {
         [string]$CommandDisplay = ""
     )
     $joined = ((@($Arguments) + @($StepId, $CommandDisplay)) -join ' ')
-    return ($joined -match '(?i)(\bp4k\s+list\b|Data\.p4k|--p4k\b|\bentity\s+loadout\b|\bentity\s+export\b|p4k[-_ ]?(explore|scan|list)|aurora[-_ ]?(example|export)|verify[-_ ]?sc[-_ ]?build)')
+    return ($joined -match '(?i)(\bstarbreaker\b.*\bp4k\b|\bp4k\s+list\b|Data\.p4k|--p4k\b|\bentity\s+loadout\b|\bentity\s+export\b|p4k[-_ ]?(explore|scan|list)|aurora[-_ ]?(example|export)|Aurora\s+MR|RSI_Aurora|verify[-_ ]?sc[-_ ]?build)')
 }
 
 function Test-StarBreakerP4KScanArguments {
@@ -49215,8 +49328,6 @@ function Get-P4KQuietScanHeartbeatNote {
         [string[]]$Arguments = @(),
         [string]$CommandDisplay = ""
     )
-    if ($Elapsed.TotalSeconds -lt 20) { return $BaseNote }
-
     $lastAge = "waiting for log output"
     try {
         if (-not [string]::IsNullOrWhiteSpace($LogPath) -and (Test-Path -LiteralPath $LogPath)) {
@@ -49232,13 +49343,14 @@ function Get-P4KQuietScanHeartbeatNote {
     if ([string]::IsNullOrWhiteSpace($target) -and $CommandDisplay -match '(?i)\b(RSI_Aurora_MR[0-9A-Za-z_]*)\b') { $target = "entity target: " + [string]$matches[1] }
     if ([string]::IsNullOrWhiteSpace($target)) { $target = "not specified" }
     return @"
-Still scanning Data.p4k...
-StarBreaker can be quiet while indexing/searching the archive.
+P4K SCAN STATUS: still working
+StarBreaker can be quiet while indexing/searching Data.p4k.
 Elapsed time: $elapsedText
 Last log write age: $lastAge
 Output log path: $LogPath
-Current filter or entity target: $target
+Current command target/filter/entity: $target
 Do not close this window.
+To abort cleanly, press Ctrl+C. A log of progress so far will still be saved.
 "@.Trim()
 }
 
