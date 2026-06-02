@@ -19,6 +19,9 @@ set "DG_CLI_SKIPTOOLS=0"
 set "DG_CLI_SELFTEST=0"
 set "DG_CLI_NONLIVE=0"
 set "DG_MUSIC_ON=1"
+set "DG_ANIM_ON=1"
+set "DG_ANIM_FALLBACK="
+set "DG_ANIM_FALLBACK_REASON="
 set "DG_MUSIC_STARTED=0"
 set "DG_MUSIC_AUDIO="
 set "DG_MUSIC_SCRIPT="
@@ -53,10 +56,17 @@ for %%A in (%*) do (
 )
 
 if "%SC_ZERO_TO_HERO_MUSIC%"=="0" set "DG_MUSIC_ON=0"
+if "%SC_ZERO_TO_HERO_ANIMATION%"=="0" set "DG_ANIM_ON=0"
 if "%DG_CLI_NONLIVE%"=="1" set "DG_MUSIC_ON=0"
-if "%DG_CLI_NONLIVE%"=="0" call :CaptureLauncherProcessIdentity
+if "%DG_CLI_NONLIVE%"=="1" set "DG_ANIM_ON=0"
 
 if "%DG_CLI_SELFTEST%"=="1" goto :RunSelfTest
+
+REM First paint: show an immediate, pure-CMD loading screen BEFORE any
+REM WMI/CIM parent capture, PowerShell launch, payload extraction, Base64
+REM decode, temp MP3 write, or animation/music process startup.
+if "%DG_CLI_NONLIVE%"=="0" call :ShowLoadingScreen
+if "%DG_CLI_NONLIVE%"=="0" call :CaptureLauncherProcessIdentity
 
 goto :StartLauncher
 
@@ -72,8 +82,14 @@ goto :Finished
 
 :StartLauncher
 set "DG_LAUNCH_KEY="
+if not "%DG_ANIM_ON%"=="1" goto :StaticLauncherPrompt
+set "DG_ANIM_FALLBACK="
+call :StopLauncherMusic
 call :RunIntroAnimation
-if errorlevel 1 goto :StaticLauncherPrompt
+if errorlevel 1 (
+    if "%DG_ANIM_ON%"=="1" set "DG_ANIM_FALLBACK=1"
+    goto :StaticLauncherPrompt
+)
 if /I "%DG_LAUNCH_KEY%"=="Y" (
     call :StopLauncherMusic
     set "DG_MODE=live"
@@ -102,17 +118,27 @@ if "%DG_MUSIC_ON%"=="1" (
 ) else (
     echo Music: OFF ^(Press M to mute/unmute^)
 )
+if "%DG_ANIM_ON%"=="1" (
+    if "%DG_ANIM_FALLBACK%"=="1" (
+        echo Animation: unavailable ^(reason: %DG_ANIM_FALLBACK_REASON%; Press A to retry^)
+    ) else (
+        echo Animation: ON  ^(Press A to toggle^)
+    )
+) else (
+    echo Animation: OFF ^(Press A to toggle^)
+)
 echo.
 echo Ready to launch?
 echo   Y = live setup. You will choose the install root next; Windows UAC may ask for Administrator permission.
-echo   N = cancel. Nothing is changed.
+echo   Q = quit. Nothing is changed.
 echo   M = music on/off.
+echo   A = animation on/off.
 echo.
 
 :PromptLaunchChoice
-<nul set /p "=Ready to launch? Type Y, N, or M: "
+<nul set /p "=Ready to launch? Type Y, Q, M, or A: "
 set "DG_LAUNCH_KEY="
-for /f "usebackq delims=" %%K in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$k=[Console]::ReadKey($true).KeyChar; if($k -match '^[Yy]$'){ 'Y' } elseif($k -match '^[Nn]$'){ 'N' } elseif($k -match '^[Mm]$'){ 'M' } elseif($k -match '^[Hh]$'){ 'H' } else { '?' }"`) do set "DG_LAUNCH_KEY=%%K"
+for /f "usebackq delims=" %%K in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$k=[Console]::ReadKey($true).KeyChar; if($k -match '^[Yy]$'){ 'Y' } elseif($k -match '^[QqNn]$'){ 'N' } elseif($k -match '^[Mm]$'){ 'M' } elseif($k -match '^[Aa]$'){ 'A' } elseif($k -match '^[Hh]$'){ 'H' } else { '?' }"`) do set "DG_LAUNCH_KEY=%%K"
 if /I "%DG_LAUNCH_KEY%"=="Y" (
     echo Y
     call :StopLauncherMusic
@@ -120,7 +146,7 @@ if /I "%DG_LAUNCH_KEY%"=="Y" (
     goto :ChooseInstallRoot
 )
 if /I "%DG_LAUNCH_KEY%"=="N" (
-    echo N
+    echo Q
     call :StopLauncherMusic
     goto :Cancelled
 )
@@ -133,7 +159,19 @@ if /I "%DG_LAUNCH_KEY%"=="M" (
         set "DG_MUSIC_ON=1"
         call :EnsureLauncherMusic
     )
-    goto :StartLauncher
+    goto :StaticLauncherPrompt
+)
+if /I "%DG_LAUNCH_KEY%"=="A" (
+    echo A
+    if "%DG_ANIM_ON%"=="1" (
+        set "DG_ANIM_ON=0"
+        set "DG_ANIM_FALLBACK="
+        goto :StaticLauncherPrompt
+    ) else (
+        set "DG_ANIM_ON=1"
+        set "DG_ANIM_FALLBACK="
+        goto :StartLauncher
+    )
 )
 if /I "%DG_LAUNCH_KEY%"=="H" (
     echo.
@@ -142,7 +180,7 @@ if /I "%DG_LAUNCH_KEY%"=="H" (
     goto :ChooseInstallRoot
 )
 echo.
-echo Please type Y, N, or M.
+echo Please type Y, Q, M, or A.
 echo.
 goto :PromptLaunchChoice
 
@@ -158,25 +196,58 @@ if "%DG_CLI_NONLIVE%"=="1" exit /b 1
 set "DG_INTRO_TOKEN=%RANDOM%%RANDOM%"
 set "DG_INTRO_SCRIPT=%TEMP%\SC-Zero-to-Hero-Intro-%DG_INTRO_TOKEN%.ps1"
 set "DG_INTRO_CHOICE_FILE=%TEMP%\SC-Zero-to-Hero-IntroChoice-%DG_INTRO_TOKEN%.txt"
+set "DG_INTRO_DIAG_FILE=%TEMP%\SC-Zero-to-Hero-IntroFallback.txt"
+set "DG_INTRO_RESULT="
+set "DG_ANIM_FALLBACK_REASON="
 if exist "%DG_INTRO_CHOICE_FILE%" del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $self=$env:DG_SELF; $out=$env:DG_INTRO_SCRIPT; $lines=[IO.File]::ReadAllLines($self,[Text.Encoding]::UTF8); $begin='# HINTRO_ANIMATION_PAYLOAD_BEGIN'; $end='# HINTRO_ANIMATION_PAYLOAD_END'; $s=-1; $e=-1; for($i=0; $i -lt $lines.Length; $i++){ if($lines[$i] -eq $begin){ $s=$i; continue }; if($s -ge 0 -and $lines[$i] -eq $end){ $e=$i; break } }; if($s -lt 0 -or $e -le $s){ throw 'Embedded intro animation payload was not found.' }; $payload=($lines[($s+1)..($e-1)] -join [Environment]::NewLine); $utf8=New-Object System.Text.UTF8Encoding($false); [IO.File]::WriteAllText($out,$payload,$utf8)"
 if errorlevel 1 (
+    set "DG_ANIM_FALLBACK_REASON=intro payload extraction failed"
     if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
+    call :WriteAnimFallback
     exit /b 1
 )
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%DG_INTRO_SCRIPT%" -LauncherPath "%DG_SELF%" -ChoiceFile "%DG_INTRO_CHOICE_FILE%" -MusicDefaultOn "%DG_MUSIC_ON%" -LauncherPid "%DG_LAUNCHER_PID%" -LauncherStartUtc "%DG_LAUNCHER_START_UTC%"
+echo Starting animated intro...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%DG_INTRO_SCRIPT%" -LauncherPath "%DG_SELF%" -ChoiceFile "%DG_INTRO_CHOICE_FILE%" -MusicDefaultOn "%DG_MUSIC_ON%"
 if errorlevel 1 (
+    set "DG_ANIM_FALLBACK_REASON=intro process exited before drawing"
     if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
     if defined DG_INTRO_CHOICE_FILE del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
+    call :WriteAnimFallback
+    exit /b 1
+)
+if not exist "%DG_INTRO_CHOICE_FILE%" (
+    set "DG_ANIM_FALLBACK_REASON=intro left no choice file"
+    if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
+    call :WriteAnimFallback
     exit /b 1
 )
 for /f "usebackq tokens=1,* delims==" %%A in ("%DG_INTRO_CHOICE_FILE%") do (
     if /I "%%~A"=="CHOICE" set "DG_LAUNCH_KEY=%%~B"
     if /I "%%~A"=="MUSIC" set "DG_MUSIC_ON=%%~B"
+    if /I "%%~A"=="ANIM" set "DG_ANIM_ON=%%~B"
+    if /I "%%~A"=="RESULT" set "DG_INTRO_RESULT=%%~B"
 )
 if defined DG_INTRO_SCRIPT del "%DG_INTRO_SCRIPT%" >nul 2>nul
 if defined DG_INTRO_CHOICE_FILE del "%DG_INTRO_CHOICE_FILE%" >nul 2>nul
-if not defined DG_LAUNCH_KEY exit /b 1
+if /I "%DG_LAUNCH_KEY%"=="Y" exit /b 0
+if /I "%DG_LAUNCH_KEY%"=="N" exit /b 0
+if /I "%DG_LAUNCH_KEY%"=="H" exit /b 0
+set "DG_LAUNCH_KEY="
+call :MapAnimFallbackReason
+call :WriteAnimFallback
+exit /b 1
+
+:MapAnimFallbackReason
+set "DG_ANIM_FALLBACK_REASON=intro unavailable"
+if /I "%DG_INTRO_RESULT%"=="NO_CHOICE" set "DG_ANIM_FALLBACK_REASON=no selection"
+if /I "%DG_INTRO_RESULT%"=="INTRO_EXCEPTION" set "DG_ANIM_FALLBACK_REASON=intro drawing error"
+exit /b 0
+
+:WriteAnimFallback
+if not defined DG_ANIM_FALLBACK_REASON exit /b 0
+if not defined DG_INTRO_DIAG_FILE exit /b 0
+>"%DG_INTRO_DIAG_FILE%" echo [%DATE% %TIME%] intro fell back to static prompt: %DG_ANIM_FALLBACK_REASON% (result=%DG_INTRO_RESULT%)
 exit /b 0
 
 :PrintIntro
@@ -191,6 +262,31 @@ echo.
 echo      .----[ DirectorGunner's Anti-Slicer Script ]----.
 echo    _/         ZERO TO HERO :: LOCAL RIG SETUP        \_
 echo   /__  MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY  __\
+exit /b 0
+
+:ShowLoadingScreen
+cls
+call :PrintIntro
+echo.
+echo Loading launcher...
+if "%DG_ANIM_ON%"=="1" (
+    echo Preparing animated intro and music...
+) else (
+    echo Preparing launcher...
+)
+echo.
+if "%DG_MUSIC_ON%"=="1" (
+    echo Music: ON by default
+) else (
+    echo Music: OFF
+)
+if "%DG_ANIM_ON%"=="1" (
+    echo Animation: ON by default
+) else (
+    echo Animation: OFF
+)
+echo.
+echo Press M later to mute/unmute music. Press A later to toggle animation.
 exit /b 0
 
 :EnsureLauncherMusic
@@ -639,6 +735,8 @@ exit /b %DG_EXIT%
 
 :Cancelled
 call :StopLauncherMusic
+cls
+call :PrintIntro
 echo.
 echo Setup cancelled. No changes were made.
 pause
@@ -658,9 +756,7 @@ param(
     [string]$LauncherPath,
     [string]$ChoiceFile,
     [string]$MusicDefaultOn = "1",
-    [int]$LauncherPid = 0,
-    [string]$LauncherStartUtc = "",
-    [int]$FrameDelayMs = 80
+    [int]$FrameDelayMs = 120
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
@@ -670,27 +766,12 @@ $Script:MusicAvailable = $false
 $Script:Player = $null
 $Script:TempMusicPath = Join-Path ([IO.Path]::GetTempPath()) ("SC-Zero-to-Hero-Intro-" + [guid]::NewGuid().ToString("N") + ".mp3")
 $Script:Selected = ""
+$Script:AnimationEnabled = $true
 $Script:QuitRequested = $false
 $Script:OriginalCursorVisible = $true
+$Script:IntroFallbackReason = ""
+$Script:IntroRandom = New-Object System.Random
 $Script:ScrollerText = "// DIRECTORGUNNER // MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY // SC ZERO TO HERO! //"
-
-function Test-LauncherParentAlive {
-    if ($LauncherPid -le 0) { return $true }
-    try {
-        $p = Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue
-        if ($null -eq $p) { return $false }
-        if (-not [string]::IsNullOrWhiteSpace($LauncherStartUtc)) {
-            try {
-                $expected = ([datetime]::Parse($LauncherStartUtc)).ToUniversalTime()
-                $actual = $p.StartTime.ToUniversalTime()
-                if ([Math]::Abs(($actual - $expected).TotalSeconds) -gt 2) { return $false }
-            } catch { }
-        }
-    } catch {
-        return $true
-    }
-    return $true
-}
 
 function Get-EmbeddedIntroMusicBase64 {
     if ([string]::IsNullOrWhiteSpace($LauncherPath) -or -not (Test-Path -LiteralPath $LauncherPath)) { return "" }
@@ -713,16 +794,25 @@ function Get-EmbeddedIntroMusicBase64 {
     return (($lines[($s + 1)..($e - 1)] -join "") -replace "\s", "")
 }
 
+# Intro music plays IN-PROCESS, exactly like the working success celebration.
+# Because the player lives inside this animation process, closing the launcher
+# window kills the process and the music stops with it -- no detached player,
+# no parent-process watchdog, and no orphan-music risk. Music is fail-soft and
+# can never stop the animation from running.
 function Start-IntroMusic {
     if (-not $Script:MusicEnabled) { return }
     try {
-        $b64 = Get-EmbeddedIntroMusicBase64
-        if ([string]::IsNullOrWhiteSpace($b64)) { $Script:MusicAvailable = $false; return }
-        [IO.File]::WriteAllBytes($Script:TempMusicPath, [Convert]::FromBase64String($b64))
-        Add-Type -AssemblyName PresentationCore
-        $Script:Player = New-Object System.Windows.Media.MediaPlayer
-        $Script:Player.Volume = 0.45
-        $Script:Player.Open((New-Object System.Uri($Script:TempMusicPath)))
+        if ($null -eq $Script:Player) {
+            if (-not (Test-Path -LiteralPath $Script:TempMusicPath)) {
+                $b64 = Get-EmbeddedIntroMusicBase64
+                if ([string]::IsNullOrWhiteSpace($b64)) { $Script:MusicAvailable = $false; return }
+                [IO.File]::WriteAllBytes($Script:TempMusicPath, [Convert]::FromBase64String($b64))
+            }
+            Add-Type -AssemblyName PresentationCore -ErrorAction Stop
+            $Script:Player = New-Object System.Windows.Media.MediaPlayer
+            $Script:Player.Volume = 0.45
+            $Script:Player.Open((New-Object System.Uri($Script:TempMusicPath)))
+        }
         $Script:Player.Play()
         $Script:MusicAvailable = $true
     } catch {
@@ -732,14 +822,15 @@ function Start-IntroMusic {
 }
 
 function Stop-IntroMusic {
-    try {
-        if ($null -ne $Script:Player) {
-            try { $Script:Player.Stop() } catch { }
-            try { $Script:Player.Close() } catch { }
-        }
-    } catch { }
+    if ($null -ne $Script:Player) {
+        try { $Script:Player.Stop() } catch { }
+        try { $Script:Player.Close() } catch { }
+    }
     $Script:Player = $null
     $Script:MusicAvailable = $false
+}
+
+function Remove-IntroMusicTemp {
     try {
         if (Test-Path -LiteralPath $Script:TempMusicPath) {
             Remove-Item -LiteralPath $Script:TempMusicPath -Force -ErrorAction SilentlyContinue
@@ -769,16 +860,20 @@ function Update-IntroMusicLoop {
     } catch { }
 }
 
+# Sizing mirrors the proven success-celebration/preview model: always produce a
+# usable canvas (floored to a sane minimum, clamped to a maximum) and ALWAYS
+# animate. There is no normal-terminal bail-out to the static prompt, so a
+# standard console reliably shows the animated intro.
 function Get-SafeConsoleSize {
     $width = 100
     $height = 30
     try {
-        $width = [Math]::Max(70, [Console]::WindowWidth)
-        $height = [Math]::Max(20, [Console]::WindowHeight)
+        $width = [Math]::Max(72, [Console]::WindowWidth - 2)
+        $height = [Math]::Max(20, [Console]::WindowHeight - 2)
     } catch { }
     return [pscustomobject]@{
-        Width = [Math]::Min($width, 136)
-        Height = [Math]::Min($height, 38)
+        Width = [Math]::Min([Math]::Max(72, $width), 136)
+        Height = [Math]::Min([Math]::Max(20, $height), 38)
     }
 }
 
@@ -818,29 +913,37 @@ function Center-Text {
 
 function New-StarField {
     param([int]$Width, [int]$Height, [int]$Count)
-    $rand = New-Object System.Random
     $chars = @(".", ".", ".", "+", "*")
     $stars = New-Object 'System.Collections.Generic.List[object]'
     for ($i = 0; $i -lt $Count; $i++) {
         [void]$stars.Add([pscustomobject]@{
-            X = $rand.Next(0, [Math]::Max(1, $Width - 1))
-            Y = $rand.Next(1, [Math]::Max(2, $Height - 3))
-            Speed = $rand.Next(1, 4)
-            Char = $chars[$rand.Next(0, $chars.Count)]
+            X = $Script:IntroRandom.Next(0, [Math]::Max(1, $Width - 1))
+            Y = $Script:IntroRandom.Next(1, [Math]::Max(2, $Height - 3))
+            Speed = $Script:IntroRandom.Next(1, 4)
+            Char = $chars[$Script:IntroRandom.Next(0, $chars.Count)]
         })
     }
     return $stars
 }
 
+function New-IntroFrameState {
+    param([object]$Size)
+    $count = [Math]::Min(160, [Math]::Max(45, [int]($Size.Width * $Size.Height / 28)))
+    return [pscustomobject]@{
+        Width = [int]$Size.Width
+        Height = [int]$Size.Height
+        Stars = New-StarField -Width ([int]$Size.Width) -Height ([int]$Size.Height) -Count $count
+    }
+}
+
 function Update-StarField {
     param([System.Collections.Generic.List[object]]$Stars, [int]$Width, [int]$Height)
-    $rand = New-Object System.Random
     foreach ($star in $Stars) {
         $star.X -= $star.Speed
         if ($star.X -le 0) {
             $star.X = $Width - 2
-            $star.Y = $rand.Next(1, [Math]::Max(2, $Height - 3))
-            $star.Speed = $rand.Next(1, 4)
+            $star.Y = $Script:IntroRandom.Next(1, [Math]::Max(2, $Height - 3))
+            $star.Speed = $Script:IntroRandom.Next(1, 4)
         }
     }
 }
@@ -903,6 +1006,16 @@ function Draw-AnimatedBanner {
     Center-Text -Canvas $Canvas -Y ($Y + 3) -Text $line3 -Width $Width
 }
 
+function Convert-IntroCanvasToFrameText {
+    param(
+        [System.Collections.Generic.List[char[]]]$Canvas,
+        [int]$Width
+    )
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($row in $Canvas) { [void]$sb.AppendLine((-join $row).PadRight($Width)) }
+    return $sb.ToString()
+}
+
 function Draw-IntroFrame {
     param(
         [System.Collections.Generic.List[object]]$Stars,
@@ -921,66 +1034,105 @@ function Draw-IntroFrame {
     $bannerY = $titleY + $titleH + 2
     Draw-AnimatedBanner -Canvas $canvas -Frame $Frame -Width $Width -Y $bannerY
     $musicState = if ($Script:MusicEnabled -and $Script:MusicAvailable) { "ON" } elseif ($Script:MusicEnabled) { "ON (NO AUDIO)" } else { "OFF" }
+    $animationState = if ($Script:AnimationEnabled) { "ON" } else { "OFF" }
     $bodyY = [Math]::Min($bannerY + 6, [Math]::Max($bannerY + 5, $Height - 12))
     Center-Text -Canvas $canvas -Y $bodyY -Text "Single-file launcher for SC Zero to Hero Setup." -Width $Width
     Center-Text -Canvas $canvas -Y ($bodyY + 2) -Text ("Music: " + $musicState + "   (Press M to mute/unmute)") -Width $Width
-    Center-Text -Canvas $canvas -Y ($bodyY + 4) -Text "Ready to launch?" -Width $Width
-    Center-Text -Canvas $canvas -Y ($bodyY + 5) -Text "Y = live setup. Choose the install root next; UAC may ask for Administrator permission." -Width $Width
-    Center-Text -Canvas $canvas -Y ($bodyY + 6) -Text "N = cancel. Nothing is changed.    M = music on/off." -Width $Width
-    Center-Text -Canvas $canvas -Y ($bodyY + 8) -Text "Press Y to continue, N to cancel, or M to toggle music." -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 3) -Text ("Animation: " + $animationState + "   (Press A to toggle)") -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 5) -Text "Ready to launch?" -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 6) -Text "Y = live setup. Choose the install root next; UAC may ask for Administrator permission." -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 7) -Text "Q = quit.    M = music on/off.    A = animation on/off." -Width $Width
+    Center-Text -Canvas $canvas -Y ($bodyY + 9) -Text "Press Y to continue, Q to quit, M for music, or A to toggle animation." -Width $Width
     $scrollUnit = " " + $Script:ScrollerText + " "
     $offset = $Frame % $scrollUnit.Length
     $repeatCount = [int]([Math]::Ceiling(($Width + $scrollUnit.Length + 2) / [double]$scrollUnit.Length) + 2)
     $scrollSource = $scrollUnit * $repeatCount
     $scroll = $scrollSource.Substring($offset, $Width)
     Write-At -Canvas $canvas -X 0 -Y ($Height - 2) -Text $scroll
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($row in $canvas) { [void]$sb.AppendLine((-join $row).PadRight($Width)) }
-    return $sb.ToString()
+    return Convert-IntroCanvasToFrameText -Canvas $canvas -Width $Width
+}
+
+function Render-IntroFrame {
+    param(
+        [System.Collections.Generic.List[object]]$Stars,
+        [int]$Frame,
+        [int]$Width,
+        [int]$Height
+    )
+    [Console]::SetCursorPosition(0, 0)
+    [Console]::Write((Draw-IntroFrame -Stars $Stars -Frame $Frame -Width $Width -Height $Height))
 }
 
 function Read-IntroInput {
-    while ([Console]::KeyAvailable) {
-        $key = [Console]::ReadKey($true)
-        switch ($key.Key) {
-            "Y" { $Script:Selected = "Y"; $Script:QuitRequested = $true }
-            "N" { $Script:Selected = "N"; $Script:QuitRequested = $true }
-            "M" { Toggle-IntroMusic }
-            "H" { $Script:Selected = "H"; $Script:QuitRequested = $true }
+    try {
+        while ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            switch ($key.Key) {
+                "Y" { $Script:Selected = "Y"; $Script:QuitRequested = $true }
+                "N" { $Script:Selected = "N"; $Script:QuitRequested = $true }
+                "Q" { $Script:Selected = "N"; $Script:QuitRequested = $true }
+                "M" { Toggle-IntroMusic }
+                "A" { $Script:AnimationEnabled = -not $Script:AnimationEnabled }
+                "H" { $Script:Selected = "H"; $Script:QuitRequested = $true }
+            }
         }
-    }
+    } catch { }
 }
 
 function Save-IntroChoice {
-    $choice = if ([string]::IsNullOrWhiteSpace($Script:Selected)) { "N" } else { $Script:Selected }
     $music = if ($Script:MusicEnabled) { "1" } else { "0" }
+    $anim = if ($Script:AnimationEnabled) { "1" } else { "0" }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [IO.File]::WriteAllLines($ChoiceFile, @("CHOICE=$choice", "MUSIC=$music"), $utf8)
+    if ($Script:Selected -in @("Y", "N", "H")) {
+        [IO.File]::WriteAllLines($ChoiceFile, @("CHOICE=$($Script:Selected)", "MUSIC=$music", "ANIM=$anim"), $utf8)
+    } elseif (-not [string]::IsNullOrWhiteSpace($Script:IntroFallbackReason)) {
+        [IO.File]::WriteAllLines($ChoiceFile, @("RESULT=$($Script:IntroFallbackReason)", "MUSIC=$music", "ANIM=$anim"), $utf8)
+    } else {
+        [IO.File]::WriteAllLines($ChoiceFile, @("RESULT=NO_CHOICE", "MUSIC=$music", "ANIM=$anim"), $utf8)
+    }
 }
 
-$size = Get-SafeConsoleSize
-$width = $size.Width
-$height = $size.Height
-$stars = New-StarField -Width $width -Height $height -Count ([Math]::Min(190, [int]($width * $height / 22)))
+$state = New-IntroFrameState -Size (Get-SafeConsoleSize)
+$width = $state.Width
+$height = $state.Height
+$stars = $state.Stars
 $frame = 0
 
+# Same control flow as the proven success celebration: capture size once, draw
+# frame 0, start in-process music, then loop until the user picks Y/Q/M/A/H.
+# Resize rebuilds the frame state instead of aborting, and the only fallback to
+# the static prompt is a genuine exception (INTRO_EXCEPTION).
 try {
     $Script:OriginalCursorVisible = [Console]::CursorVisible
     [Console]::CursorVisible = $false
     Clear-Host
+    # FIRST_VISIBLE_INTRO_FRAME_DRAWS_BEFORE_MUSIC_START
+    Render-IntroFrame -Stars $stars -Frame $frame -Width $width -Height $height
     Start-IntroMusic
     while (-not $Script:QuitRequested) {
-        if (-not (Test-LauncherParentAlive)) { break }
         Read-IntroInput
+        if ($Script:QuitRequested) { break }
         Update-IntroMusicLoop
-        Update-StarField -Stars $stars -Width $width -Height $height
-        $frame++
-        [Console]::SetCursorPosition(0, 0)
-        [Console]::Write((Draw-IntroFrame -Stars $stars -Frame $frame -Width $width -Height $height))
+        $currentSize = Get-SafeConsoleSize
+        if ($currentSize.Width -ne $width -or $currentSize.Height -ne $height) {
+            $state = New-IntroFrameState -Size $currentSize
+            $width = $state.Width
+            $height = $state.Height
+            $stars = $state.Stars
+            Clear-Host
+        }
+        if ($Script:AnimationEnabled) {
+            Update-StarField -Stars $stars -Width $width -Height $height
+            $frame++
+        }
+        Render-IntroFrame -Stars $stars -Frame $frame -Width $width -Height $height
         Start-Sleep -Milliseconds $FrameDelayMs
     }
+} catch {
+    $Script:IntroFallbackReason = "INTRO_EXCEPTION"
 } finally {
     Stop-IntroMusic
+    Remove-IntroMusicTemp
     try { [Console]::CursorVisible = $Script:OriginalCursorVisible } catch { }
     try { Save-IntroChoice } catch { }
     try { [Console]::SetCursorPosition(0, [Math]::Min([Console]::WindowHeight - 1, $height - 1)) } catch { }
@@ -47533,6 +47685,11 @@ function Invoke-SelfTest {
             Assert-SelfTest ($successMusicBeginIndex -gt $musicEndIndex) "Success music markers were not separate from intro music markers."
             Assert-SelfTest ($wingetIndex -gt $successMusicEndIndex) "Embedded music payloads were not before the WinGet payload marker."
             Assert-SelfTest ($psIndex -gt $wingetIndex) "PowerShell payload marker ordering was invalid."
+            $introAnimationPayload = if ($introAnimBeginIndex -ge 0 -and $introAnimEndIndex -gt $introAnimBeginIndex) {
+                ($launcherLines[($introAnimBeginIndex + 1)..($introAnimEndIndex - 1)] -join [Environment]::NewLine)
+            } else {
+                ""
+            }
             if ($musicBeginIndex -ge 0 -and $musicEndIndex -gt $musicBeginIndex) {
                 $musicBase64 = (($launcherLines[($musicBeginIndex + 1)..($musicEndIndex - 1)] -join '') -replace '\s','')
                 Assert-SelfTest ($musicBase64.Length -eq 1043468) "Embedded music Base64 length did not match the source MP3."
@@ -47560,7 +47717,10 @@ function Invoke-SelfTest {
                 }
             }
             Assert-SelfTest ($launcherText.Contains("SC_ZERO_TO_HERO_MUSIC")) "Launcher music opt-out environment variable was not present."
-            Assert-SelfTest ($launcherText.Contains("Type Y, N, or M")) "Launcher prompt did not advertise Y/N/M."
+            $visibleCmdPromptLines = @($launcherLines | Where-Object { $_ -match '^\s*(echo|<nul set /p)' })
+            $visibleCmdPromptText = ($visibleCmdPromptLines -join [Environment]::NewLine)
+            Assert-SelfTest ($visibleCmdPromptText.Contains("Type Y, Q, M, or A")) "Static launcher prompt did not advertise Y/Q/M/A."
+            Assert-SelfTest ($visibleCmdPromptText.Contains("Q = quit. Nothing is changed.") -and (-not ($visibleCmdPromptText -match '(?im)^\s*echo\s+N\s*=\s*cancel'))) "Static launcher prompt still advertised N as cancel instead of Q."
             Assert-SelfTest ($launcherText.Contains("DIRECTORGUNNER") -and $launcherText.Contains("DirectorGunner's Anti-Slicer Script") -and $launcherText.Contains("ZERO TO HERO :: LOCAL RIG SETUP") -and $launcherText.Contains("MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY")) "Animated intro required title/banner text was missing."
             Assert-SelfTest ($launcherText.Contains("// DIRECTORGUNNER // MAKE IT EASY // MAKE IT FAST // MAKE IT SEXY // SC ZERO TO HERO! //")) "Animated intro scroller text was missing or changed."
             Assert-SelfTest (-not $launcherText.Contains(("CHROME NINJA " + "CODING BRIGADE"))) "Animated intro contained rejected old scroller text."
@@ -47568,10 +47728,46 @@ function Invoke-SelfTest {
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="M"')) "Launcher prompt did not handle M music toggle."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="H"')) "Hidden H launcher path was not present."
             Assert-SelfTest (-not ($launcherText -match '(?im)^\s*echo\s+.*H\s*=')) "Hidden H appears to be advertised in visible launcher text."
-            Assert-SelfTest ($launcherText.Contains("Test-LauncherParentAlive") -and $launcherText.Contains("LauncherPid") -and $launcherText.Contains("LauncherStartUtc")) "Intro music parent-process watchdog was missing."
-            Assert-SelfTest ($launcherText.Contains("while (-not (Test-Path -LiteralPath `$StopFile))") -and $launcherText.Contains("if (-not (Test-LauncherParentAlive)) { break }")) "Intro music player did not exit on stop signal or missing parent process."
+            Assert-SelfTest ($launcherText.Contains(":ShowLoadingScreen") -and $launcherText.Contains("Loading launcher...")) "Immediate CMD loading screen was missing."
+            $loadingCallIndex = $launcherText.IndexOf("call :ShowLoadingScreen")
+            $captureCallIndex = $launcherText.IndexOf("call :CaptureLauncherProcessIdentity")
+            $introCallIndex = $launcherText.IndexOf("call :RunIntroAnimation")
+            Assert-SelfTest ($loadingCallIndex -ge 0 -and ($captureCallIndex -lt 0 -or $loadingCallIndex -lt $captureCallIndex) -and ($introCallIndex -lt 0 -or $loadingCallIndex -lt $introCallIndex)) "First-paint loading screen did not precede WMI parent capture and intro animation startup."
+            Assert-SelfTest ($launcherText.Contains('set "DG_ANIM_ON=1"') -and $launcherText.Contains("SC_ZERO_TO_HERO_ANIMATION")) "Animation default-on state or SC_ZERO_TO_HERO_ANIMATION opt-out was missing."
+            Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="A"')) "Launcher prompt did not handle A animation toggle."
+            Assert-SelfTest ($visibleCmdPromptText.Contains("A = animation on/off")) "Static launcher prompt did not advertise the A animation toggle."
+            Assert-SelfTest ($introAnimationPayload.Contains("Q = quit.") -and $introAnimationPayload.Contains("Press Y to continue, Q to quit") -and (-not $introAnimationPayload.Contains("N = cancel"))) "Animated intro visible controls did not use Q as the only advertised cancel/quit key."
+            Assert-SelfTest ($introAnimationPayload.Contains('$Script:AnimationEnabled = $true') -and $introAnimationPayload.Contains('$Script:AnimationEnabled = -not $Script:AnimationEnabled') -and $introAnimationPayload.Contains('"ANIM=$anim"')) "Animated intro A-toggle state carryback was missing."
+            Assert-SelfTest ($launcherText.Contains('if /I "%%~A"=="ANIM" set "DG_ANIM_ON=%%~B"')) "RunIntroAnimation did not parse the ANIM choice-file token."
+            Assert-SelfTest ((-not $introAnimationPayload.Contains("function New-IntroMusicPlayerScript")) -and (-not $introAnimationPayload.Contains("Start-Process -FilePath powershell.exe"))) "Intro still launched a detached music player process instead of playing in-process."
+            Assert-SelfTest ($introAnimationPayload.Contains("function Start-IntroMusic") -and $introAnimationPayload.Contains("New-Object System.Windows.Media.MediaPlayer") -and $introAnimationPayload.Contains('$Script:Player.Play()')) "Intro did not play music in-process via MediaPlayer like the success celebration."
+            $introLaunchLines = @($launcherLines | Where-Object { $_ -like 'powershell.exe -NoProfile*-File "%DG_INTRO_SCRIPT%"*' -and $_ -notmatch 'Assert-SelfTest|launcherText\.Contains|introLaunchLines|introLaunchJoined' })
+            $introLaunchJoined = ($introLaunchLines -join [Environment]::NewLine)
+            Assert-SelfTest ($introLaunchLines.Count -eq 1 -and $introLaunchJoined.Contains('-File "%DG_INTRO_SCRIPT%"') -and $introLaunchJoined.Contains('-LauncherPath "%DG_SELF%"') -and $introLaunchJoined.Contains('-ChoiceFile "%DG_INTRO_CHOICE_FILE%"') -and $introLaunchJoined.Contains('-MusicDefaultOn "%DG_MUSIC_ON%"')) "Intro launch did not use the simplified executable argument set."
+            Assert-SelfTest ((-not $introLaunchJoined.Contains("-STA")) -and (-not $introLaunchJoined.Contains("-LauncherPid")) -and (-not $introLaunchJoined.Contains("-LauncherStartUtc"))) "Actual intro launch line still used -STA or parent PID/start-time arguments."
+            Assert-SelfTest ($launcherText.Contains("DG_ANIM_FALLBACK_REASON") -and $launcherText.Contains(":MapAnimFallbackReason") -and $launcherText.Contains(":WriteAnimFallback")) "Animation fallback-reason diagnostics were missing."
+            Assert-SelfTest ($launcherText.Contains("Animation: unavailable") -and $launcherText.Contains("Press A to retry")) "Static prompt did not expose a concise animation fallback reason with A retry."
+            Assert-SelfTest ($launcherText.Contains("Test-LauncherParentAlive") -and $launcherText.Contains("LauncherPid") -and $launcherText.Contains("LauncherStartUtc")) "Launcher/static-prompt music parent-process watchdog was missing."
+            Assert-SelfTest ($launcherText.Contains("while (-not (Test-Path -LiteralPath `$StopFile))") -and $launcherText.Contains("if (-not (Test-LauncherParentAlive)) { break }")) "Launcher/static-prompt music player did not exit on stop signal or missing parent process."
+            Assert-SelfTest (-not $introAnimationPayload.Contains("Test-LauncherParentAlive")) "Intro payload still contained a parent-process watchdog (should be in-process music with no watchdog)."
+            Assert-SelfTest (-not $introAnimationPayload.Contains('{ "N" } else { $Script:Selected }')) "Foreground intro still defaulted blank selection to N."
+            Assert-SelfTest ($introAnimationPayload.Contains('RESULT=NO_CHOICE') -and $introAnimationPayload.Contains('$Script:Selected -in @("Y", "N", "H")')) "Foreground intro no-choice handling did not fall back cleanly."
+            Assert-SelfTest ($introAnimationPayload.Contains('"Q" { $Script:Selected = "N"; $Script:QuitRequested = $true }')) "Animated intro did not map visible Q to the existing internal cancel path."
+            Assert-SelfTest ($introAnimationPayload.Contains("function New-Canvas") -and $introAnimationPayload.Contains("function Write-At") -and $introAnimationPayload.Contains("function Center-Text") -and $introAnimationPayload.Contains("function Render-IntroFrame") -and $introAnimationPayload.Contains("function Convert-IntroCanvasToFrameText")) "Foreground intro renderer did not use the full-canvas success-style draw architecture."
+            Assert-SelfTest ($introAnimationPayload.Contains("[Console]::SetCursorPosition(0, 0)") -and $introAnimationPayload.Contains("PadRight(`$Width)") -and $introAnimationPayload.Contains("Draw-IntroFrame")) "Foreground intro renderer did not use fixed-width frame output from a single cursor reset."
+            Assert-SelfTest ((-not $introAnimationPayload.Contains("function Test-IntroConsoleResize")) -and (-not $introAnimationPayload.Contains("RESULT=RESIZE_FALLBACK"))) "Intro still aborted the animation on resize instead of continuing to draw like the success celebration."
+            Assert-SelfTest ((-not $introAnimationPayload.Contains('UNSUPPORTED_CONSOLE')) -and $introAnimationPayload.Contains('INTRO_EXCEPTION')) "Intro still bailed on an unsupported-console gate, or lost its exception fallback state."
+            Assert-SelfTest ($introAnimationPayload.Contains('$currentSize = Get-SafeConsoleSize') -and $introAnimationPayload.Contains('New-IntroFrameState -Size $currentSize')) "Intro did not rebuild frame state safely when the console size changed."
+            $firstFrameMarker = $introAnimationPayload.IndexOf('# FIRST_VISIBLE_INTRO_FRAME_DRAWS_BEFORE_MUSIC_START')
+            $firstFrameRender = if ($firstFrameMarker -ge 0) { $introAnimationPayload.IndexOf('Render-IntroFrame -Stars $stars -Frame $frame -Width $width -Height $height', $firstFrameMarker) } else { -1 }
+            $musicStartAfterFrame = if ($firstFrameRender -ge 0) { $introAnimationPayload.IndexOf('Start-IntroMusic', $firstFrameRender) } else { -1 }
+            Assert-SelfTest ($firstFrameMarker -ge 0 -and $firstFrameRender -gt $firstFrameMarker -and $musicStartAfterFrame -gt $firstFrameRender) "Foreground intro did not render frame 0 before starting music."
+            Assert-SelfTest ($introAnimationPayload.Contains("function Get-EmbeddedIntroMusicBase64") -and $introAnimationPayload.Contains("[IO.File]::WriteAllBytes(`$Script:TempMusicPath") -and $introAnimationPayload.Contains("New-Object System.Windows.Media.MediaPlayer")) "Intro music decode/write/open logic was not in-process."
+            Assert-SelfTest ($launcherText.Contains('if not exist "%DG_INTRO_CHOICE_FILE%"') -and $launcherText.Contains('set "DG_LAUNCH_KEY="') -and $launcherText.Contains('exit /b 1')) "RunIntroAnimation did not make missing/blank/unsupported choices fall back."
             Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="Y"') -and $launcherText.Contains("goto :ChooseInstallRoot")) "Normal Y handoff did not go directly to install-root selection."
+            Assert-SelfTest ($launcherText.Contains('if /I "%DG_LAUNCH_KEY%"=="N"') -and $launcherText.Contains("goto :Cancelled")) "Explicit N cancel path was missing."
             Assert-SelfTest ($launcherText.Contains("DG_SUPPRESS_FINISHED_MESSAGE") -and $launcherText.Contains('if "%DG_SUPPRESS_FINISHED_MESSAGE%"=="1" exit /b %DG_EXIT%')) "Normal handoff exit-code message suppression was missing."
+            Assert-SelfTest ($launcherText.Contains(":Cancelled") -and $launcherText.Contains("cls") -and $launcherText.Contains("Setup cancelled. No changes were made.")) "Cancel screen was not redrawn cleanly."
             Assert-SelfTest ($launcherText.Contains("call :StopLauncherMusic") -and $launcherText.Contains(":RunPayload")) "Launcher music stop calls were not present around setup transitions."
             Assert-SelfTest ($launcherText.Contains('if not "%DG_MUSIC_STARTED%"=="1" if not defined DG_MUSIC_PLAYER_PID if not defined DG_MUSIC_STOP exit /b %DG_MUSIC_STOP_EXIT%')) "StopLauncherMusic did not have a cheap no-op path."
             Assert-SelfTest ($launcherText.Contains("WaitForExit(300)")) "StopLauncherMusic cleanup wait was not shortened to 300 ms."
